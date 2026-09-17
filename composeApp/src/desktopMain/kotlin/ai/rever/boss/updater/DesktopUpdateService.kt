@@ -46,7 +46,14 @@ internal fun validateUpdateAssetName(assetName: String) {
     }
 }
 
-actual class UpdateService {
+actual class UpdateService(
+    /**
+     * Dedicated GitHub source used only to recover a download if the primary URL
+     * fails. Injectable so tests can point the fallback at a server they control;
+     * the default is the real GitHub Releases source.
+     */
+    private val gitHubSource: UpdateSource = GitHubUpdateSource(),
+) {
     private val logger = BossLogger.forComponent("UpdateService")
 
     /**
@@ -55,9 +62,6 @@ actual class UpdateService {
      * BOSS_UPDATE_PRIMARY_SOURCE for testing/rollback.
      */
     private val source: UpdateSource = buildSource()
-
-    /** Dedicated GitHub source used only to recover a download if the primary URL fails. */
-    private val gitHubSource = GitHubUpdateSource()
 
     private fun buildSource(): UpdateSource =
         when (UpdateSourceConfig.primarySource) {
@@ -208,9 +212,26 @@ actual class UpdateService {
                 "Primary download failed; falling back to GitHub asset",
                 mapOf(
                     "asset" to updateInfo.assetName,
+                    // Not the hash itself: what an operator scanning the log needs to
+                    // know is whether the fallback run is verified against anything.
+                    "sha256" to if (updateInfo.sha256 != null) "catalog" else "unavailable",
                 ),
             )
-            return downloadFrom(gitHubUrl, updateInfo.assetName, updateInfo.assetSize, sha256 = null, onProgress)
+            // The fallback fetches the same asset of the same version the UpdateInfo
+            // row describes, and the release pipeline publishes one artifact to both
+            // sources, so the catalog hash binds these bytes too. Passing null here
+            // installed the fallback with no integrity check on exactly the path
+            // taken when Storage/CDN is misbehaving — and the staged installer later
+            // runs elevated, which made this the unverified hop (#797). A catalog
+            // that genuinely cannot describe the hash (a plain GitHub-only source
+            // row) still yields null here and stays unverified, exactly as before.
+            return downloadFrom(
+                gitHubUrl,
+                updateInfo.assetName,
+                updateInfo.assetSize,
+                updateInfo.sha256,
+                onProgress,
+            )
         }
         return null
     }
