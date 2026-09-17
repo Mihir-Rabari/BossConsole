@@ -14,8 +14,8 @@ import java.nio.file.Path
 import kotlin.concurrent.thread
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.fail
 import kotlin.test.assertNull
+import kotlin.test.fail
 
 /**
  * Pins that the GitHub fallback download verifies against the catalog's sha256
