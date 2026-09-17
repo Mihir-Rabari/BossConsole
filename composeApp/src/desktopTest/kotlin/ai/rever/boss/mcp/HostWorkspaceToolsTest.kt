@@ -4,7 +4,6 @@ import ai.rever.boss.components.window_panel.SplitViewState
 import ai.rever.boss.components.window_panel.SplitViewStateRegistry
 import ai.rever.boss.components.workspaces.LayoutWorkspace
 import ai.rever.boss.components.workspaces.PanelConfig
-import ai.rever.boss.components.workspaces.SplitConfig
 import ai.rever.boss.components.workspaces.TabConfig
 import ai.rever.boss.components.workspaces.extractCurrentWorkspace
 import ai.rever.boss.components.workspaces.workspaceManager
@@ -13,6 +12,7 @@ import ai.rever.boss.plugin.api.TabInfo
 import ai.rever.boss.plugin.api.TabRegistry
 import ai.rever.boss.plugin.api.TabTypeInfo
 import ai.rever.boss.plugin.tab.terminal.TerminalTabType
+import ai.rever.boss.plugin.workspace.SplitConfig
 import ai.rever.boss.window.WindowProjectStateRegistry
 import androidx.compose.runtime.Composable
 import com.arkivanov.decompose.ComponentContext
