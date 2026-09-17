@@ -333,7 +333,6 @@ class RunConfigurationConcurrencyTest {
         assertEquals(0, settings.configurations.size, "Corrupt file should recover to empty configurations")
     }
 
-
     @Test
     fun `concurrent updates of the same configuration apply exactly one whole payload`() =
         runBlocking(Dispatchers.Default) {
@@ -493,7 +492,9 @@ class RunConfigurationConcurrencyTest {
         // The edit lives on in memory: persistence failed, the session's change did not.
         assertEquals(
             "never-persisted",
-            RunConfigurationManager.currentSettings.value.configurations.single { it.id == seeded.id }.command,
+            RunConfigurationManager.currentSettings.value.configurations
+                .single { it.id == seeded.id }
+                .command,
         )
         // atomicWriteText failed before creating its temp sibling, so nothing was left behind.
         val strayTempFiles = tempDir.listFiles { file -> file.name.endsWith(".tmp") }.orEmpty()
@@ -525,7 +526,9 @@ class RunConfigurationConcurrencyTest {
         )
         assertEquals(
             "cannot-persist",
-            RunConfigurationManager.currentSettings.value.configurations.single().command,
+            RunConfigurationManager.currentSettings.value.configurations
+                .single()
+                .command,
         )
         // The temp sibling that failed its move must have been cleaned up, not abandoned.
         val strayTempFiles = tempDir.listFiles { file -> file.name.endsWith(".tmp") }.orEmpty()
