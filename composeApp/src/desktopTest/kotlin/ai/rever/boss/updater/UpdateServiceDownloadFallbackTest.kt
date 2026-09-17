@@ -14,7 +14,7 @@ import java.nio.file.Path
 import kotlin.concurrent.thread
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertNotNull
+import kotlin.test.fail
 import kotlin.test.assertNull
 
 /**
@@ -192,9 +192,10 @@ class UpdateServiceDownloadFallbackTest {
                 service.downloadUpdate(info) {}
             }
 
-        val staged = assertNotNull(path, "a fallback body matching the catalog hash must be staged")
-        assertEquals(goodBytes.size.toLong(), staged.length())
-        assertEquals(sha256OfBytes(goodBytes), sha256Of(staged))
+        val staged = path ?: fail("a fallback body matching the catalog hash must be staged")
+        val stagedFile = File(staged)
+        assertEquals(goodBytes.size.toLong(), stagedFile.length())
+        assertEquals(sha256OfBytes(goodBytes), sha256Of(stagedFile))
         server.close()
     }
 
@@ -235,7 +236,7 @@ class UpdateServiceDownloadFallbackTest {
                 service.downloadUpdate(info) {}
             }
 
-        assertNotNull(path, "a hash-less catalog row must still download via the fallback")
+        path ?: fail("a hash-less catalog row must still download via the fallback")
         server.close()
     }
 }
