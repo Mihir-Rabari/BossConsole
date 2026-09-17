@@ -2116,7 +2116,8 @@ provided. Ledger redaction is bounded and best effort, not a guarantee for secre
 under arbitrary keys. Queue overflow and cancellation before/after dispatch have
 distinct ledger dispositions. Risk classification from #336 feeds this same policy and approval path; there is
 no second sandbox prompt. Explicit policies and session trust retain precedence.
-HIGH/CRITICAL names use the mutating default, while unknown names remain allowed
+HIGH/CRITICAL risk names use the mutating default alongside catalog-mutating
+and provider-declared mutating names, while everything else remains allowed
 by default. Risk reasons and sanitized arguments appear together in the existing
 approval dialog. #362 is closed pending extraction into a management plugin.
 
