@@ -16,6 +16,10 @@ import ai.rever.boss.plugin.workspace.SplitConfig
 import ai.rever.boss.window.WindowProjectStateRegistry
 import androidx.compose.runtime.Composable
 import com.arkivanov.decompose.ComponentContext
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 import kotlin.io.path.createTempDirectory
 import kotlin.test.AfterTest
@@ -24,10 +28,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
-import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * open_workspace, driven through the real invocation path (McpToolRegistryCore, the same
@@ -83,10 +83,11 @@ class HostWorkspaceToolsTest {
     @Test
     fun `relative path is refused rather than resolved against the process directory`() =
         runBlocking {
-            val result = core().invoke(
-                HostWorkspaceTools.OPEN_WORKSPACE_TOOL_NAME,
-                """{"path":"some/relative/dir"}""",
-            )
+            val result =
+                core().invoke(
+                    HostWorkspaceTools.OPEN_WORKSPACE_TOOL_NAME,
+                    """{"path":"some/relative/dir"}""",
+                )
 
             assertTrue(result.isError)
             assertTrue(result.text.contains("absolute"), result.text)
@@ -181,7 +182,11 @@ class HostWorkspaceToolsTest {
             val first =
                 registryCore.invoke(HostWorkspaceTools.OPEN_WORKSPACE_TOOL_NAME, """{"path":"$project"}""")
             assertFalse(first.isError, first.text)
-            val firstId = Json.parseToJsonElement(first.text).jsonObject["workspace_id"]!!.jsonPrimitive.content
+            val firstId =
+                Json
+                    .parseToJsonElement(first.text)
+                    .jsonObject["workspace_id"]!!
+                    .jsonPrimitive.content
 
             val second =
                 registryCore.invoke(HostWorkspaceTools.OPEN_WORKSPACE_TOOL_NAME, """{"path":"$project"}""")
@@ -269,9 +274,10 @@ class HostWorkspaceToolsTest {
         val space = buildBootstrapSpace("/work/p")
 
         val payload =
-            Json.parseToJsonElement(
-                buildOpenResult(reused = true, windowId = "w-1", space = space, projectPath = "/work/p"),
-            ).jsonObject
+            Json
+                .parseToJsonElement(
+                    buildOpenResult(reused = true, windowId = "w-1", space = space, projectPath = "/work/p"),
+                ).jsonObject
 
         assertEquals("reused", payload["status"]?.jsonPrimitive?.content)
         assertEquals("w-1", payload["window_id"]?.jsonPrimitive?.content)
@@ -287,9 +293,10 @@ class HostWorkspaceToolsTest {
         id = id,
         name = id,
         description = "",
-        layout = SplitConfig.SinglePanel(
-            PanelConfig(id = "panel-$id", tabs = listOf(TabConfig(type = "terminal", title = "Terminal"))),
-        ),
+        layout =
+            SplitConfig.SinglePanel(
+                PanelConfig(id = "panel-$id", tabs = listOf(TabConfig(type = "terminal", title = "Terminal"))),
+            ),
         projectPath = projectPath,
     )
 }

@@ -19,15 +19,15 @@ import ai.rever.boss.utils.extractFileName
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
 import ai.rever.boss.window.WindowProjectStateRegistry
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Clock
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 
 /**
  * Host-side MCP tools for bootstrapping a Space without a human clicking the UI first (#780).
@@ -145,7 +145,11 @@ internal object HostWorkspaceTools {
             if (requestedWindowId != null) {
                 if (SplitViewStateRegistry.getState(requestedWindowId) == null) {
                     val openWindows =
-                        SplitViewStateRegistry.getAllStates().keys.joinToString(", ").ifEmpty { "(none)" }
+                        SplitViewStateRegistry
+                            .getAllStates()
+                            .keys
+                            .joinToString(", ")
+                            .ifEmpty { "(none)" }
                     return McpToolResult(
                         "No open window with id '$requestedWindowId'. Open windows: $openWindows",
                         isError = true,
@@ -245,7 +249,12 @@ internal object HostWorkspaceTools {
         if (windows.isEmpty()) return null
         if (windows.size == 1) return windows.keys.first()
         return windows.keys.firstOrNull {
-            WindowProjectStateRegistry.get(it)?.selectedProject?.value?.path.isNullOrEmpty()
+            WindowProjectStateRegistry
+                .get(it)
+                ?.selectedProject
+                ?.value
+                ?.path
+                .isNullOrEmpty()
         } ?: windows.keys.first()
     }
 }
@@ -260,11 +269,12 @@ internal const val BOOTSTRAP_PANEL_ID = "panel-open-workspace"
 internal fun expandTilde(
     path: String,
     home: String? = System.getProperty("user.home"),
-): String = when {
-    path == "~" -> home ?: path
-    path.startsWith("~/") -> home?.let { it + path.substring(1) } ?: path
-    else -> path
-}
+): String =
+    when {
+        path == "~" -> home ?: path
+        path.startsWith("~/") -> home?.let { it + path.substring(1) } ?: path
+        else -> path
+    }
 
 /**
  * The canonical absolute form of [path], or null when it is not an existing directory.
@@ -291,18 +301,20 @@ internal fun buildBootstrapSpace(canonicalPath: String): LayoutWorkspace {
         id = LayoutWorkspace.generateId(),
         name = projectName,
         description = "Bootstrap Space opened by the open_workspace MCP tool.",
-        layout = SplitConfig.SinglePanel(
-            PanelConfig(
-                id = BOOTSTRAP_PANEL_ID,
-                tabs = listOf(
-                    TabConfig(
-                        type = "terminal",
-                        title = "Terminal",
-                        workingDirectory = canonicalPath,
-                    ),
+        layout =
+            SplitConfig.SinglePanel(
+                PanelConfig(
+                    id = BOOTSTRAP_PANEL_ID,
+                    tabs =
+                        listOf(
+                            TabConfig(
+                                type = "terminal",
+                                title = "Terminal",
+                                workingDirectory = canonicalPath,
+                            ),
+                        ),
                 ),
             ),
-        ),
         timestamp = Clock.System.now().toEpochMilliseconds(),
         projectPath = canonicalPath,
     )
@@ -343,7 +355,11 @@ internal fun buildOpenResult(
     space: LayoutWorkspace,
     projectPath: String,
 ): String {
-    val panelId = space.layout.extractPanels().firstOrNull()?.first ?: BOOTSTRAP_PANEL_ID
+    val panelId =
+        space.layout
+            .extractPanels()
+            .firstOrNull()
+            ?.first ?: BOOTSTRAP_PANEL_ID
     return buildJsonObject {
         put("status", if (reused) "reused" else "opened")
         put("window_id", windowId)
