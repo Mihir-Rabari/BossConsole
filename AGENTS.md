@@ -2070,7 +2070,16 @@ workspace by selecting the tools you need." Tools install app-wide, not into a S
 ### Governed MCP invocation (#371)
 
 The host policy applies to registry invocation; it does not isolate installed JVM
-plugins. Unknown tool names default to ALLOW. Known mutations default to ASK with
+plugins. The mutating gate is a fail-closed OR: the host's name signals - known
+mutating names, then known suffixes - are final, and the provider's own
+`McpToolDefinition.readOnly` declaration is consulted only after them, so a
+`readOnly = false` declaration makes an innocently named tool mutating while a
+`readOnly = true` claim can never launder a name the host already knows (#804).
+`null` preserves the name-only answer bit for bit, which is why existing callers
+compile and behave unchanged. `readOnly` defaults to `true` in the plugin API, so
+this catches an honest plugin declaring side effects and is deliberately not a
+defence against a hostile one that lies. Unknown tool names default to ALLOW while
+the provider declares (or defaults to) `readOnly = true`. Known mutations default to ASK with
 a 45-second timeout. Each queued prompt is delivered to exactly one window and
 window teardown denies its owned request. Session trust is process-wide and can
 be cleared using “Revoke MCP session trust” in the bottom bar; restore the bar if
@@ -2183,7 +2192,9 @@ observation/plugin architecture; this PR does not expose a policy writer to plug
 
 The MCP tool policies dialog also groups currently registered, enabled tools by
 provider into sections. All allows the section, View selects tools declared
-read-only except names in the host mutating catalog and HIGH/CRITICAL risk tools, Edit selects the remaining
+read-only except names the mutating catalog rejects - the same single `isMutating` call the invoke
+gate uses, so section buckets and the gate can never disagree - and HIGH/CRITICAL risk tools,
+Edit selects the remaining
 tools, and Custom uses individual checkboxes. Applying a preset denies tools
 outside its selection; existing tool rules are replaced only after the operator
 confirms the displayed counts and scope. These are explicit tool-name rules,

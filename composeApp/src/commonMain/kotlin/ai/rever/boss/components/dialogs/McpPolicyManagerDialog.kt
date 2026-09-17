@@ -503,7 +503,7 @@ private fun ProactiveAllowConfirmation(
     colors: BossColorScheme,
 ) {
     val risk =
-        remember(toolName, readOnly) {
+        remember(toolName) {
             DefaultMcpRiskEvaluator().evaluateRisk(toolName, McpToolArgs(emptyMap()))
         }
     if (McpMutatingToolCatalog.isMutating(toolName, readOnly)) {

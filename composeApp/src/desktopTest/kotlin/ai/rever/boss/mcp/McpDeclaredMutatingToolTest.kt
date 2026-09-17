@@ -7,6 +7,7 @@ import ai.rever.boss.plugin.api.McpToolResult
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -101,7 +102,7 @@ class McpDeclaredMutatingToolTest {
             )
 
             val deferred = async { core.invoke("env_sync", "{}") }
-            val request = approvalBus.pendingList.first { it.isNotEmpty() }.first()
+            val request = withTimeout(5_000) { approvalBus.pendingList.first { it.isNotEmpty() } }.first()
             assertEquals("env_sync", request.toolName)
             // The captured declaration is what the approval dialog labels the request with.
             assertEquals(false, request.declaredReadOnly)
@@ -183,7 +184,7 @@ class McpDeclaredMutatingToolTest {
             )
 
             val deferred = async { core.invoke("k8s_delete", "{}") }
-            val request = approvalBus.pendingList.first { it.isNotEmpty() }.first()
+            val request = withTimeout(5_000) { approvalBus.pendingList.first { it.isNotEmpty() } }.first()
             approvalBus.deny(request.id, "name wins over the claim")
 
             val res = deferred.await()

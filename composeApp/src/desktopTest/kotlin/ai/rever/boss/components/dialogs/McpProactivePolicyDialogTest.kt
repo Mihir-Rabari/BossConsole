@@ -48,6 +48,7 @@ import org.junit.Test
 import java.awt.image.BufferedImage
 import java.io.File
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class McpProactivePolicyDialogTest {
@@ -184,7 +185,27 @@ class McpProactivePolicyDialogTest {
         val rules = mapOf("read" to McpPolicyAction.DENY)
         assertEquals(rules, filterSavedPolicies(rules, listOf(tool), "Documents", mapOf("plugin.id" to "Documents")))
         assertEquals(listOf(tool), sensitiveAllows(listOf(tool), setOf("read"), rules))
+        // A declared-mutating tool with an innocent name must reach the review gate through the
+        // catalog signal too - risk level and saved denials must not be the only ways in (#804).
+        val declaredMutating = McpToolIdentity("data_fetch", "plugin.id", 0, "Fetch data", readOnly = false)
+        assertEquals(
+            listOf(declaredMutating),
+            sensitiveAllows(listOf(declaredMutating), setOf("data_fetch"), emptyMap()),
+        )
         assertEquals("Saved: Ask before running", savedPolicyLabel(McpPolicyAction.ASK))
+    }
+
+    @Test fun `isViewTool treats the catalog as the single classification point`() {
+        fun view(name: String, readOnly: Boolean) =
+            McpToolIdentity(name, "p", 0, "d", readOnly = readOnly).isViewTool()
+
+        // The four inputs of the truth table - name signal crossed with the provider declaration.
+        // Someone restoring a separate `readOnly &&` conjunct later would quietly re-narrow the
+        // View bucket away from exactly the tools #804 routes to the gate, so pin all four.
+        assertFalse(view("k8s_delete", true)) // the name wins - a lying read-only claim never upgrades
+        assertFalse(view("k8s_delete", false))
+        assertTrue(view("data_fetch", true)) // innocent name + honest read-only declaration: view
+        assertFalse(view("data_fetch", false)) // innocent name + declared side effects: edit, one call
     }
 
     @Test fun `global none includes sections hidden by search and waits for confirmation`() {

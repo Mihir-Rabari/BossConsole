@@ -94,7 +94,9 @@ open class McpApprovalBus(
      * Suspends the calling coroutine until the operator answers via the UI
      * or [timeoutMs] elapses (in which case it fails closed).
      */
-    @Suppress("ReturnCount", "LongParameterList") // Queue overflow needs its own returns; the request carries the tool's full approval context.
+    // Queue overflow needs its own returns; the request carries the tool's full approval
+    // context, from name and provider to its own read-only declaration.
+    @Suppress("ReturnCount", "LongParameterList")
     suspend fun requestApproval(
         toolName: String,
         providerId: String,
