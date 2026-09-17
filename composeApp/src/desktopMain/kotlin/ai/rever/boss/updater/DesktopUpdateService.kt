@@ -58,7 +58,7 @@ actual class UpdateService internal constructor(
      * constructor matching does not consider default parameter values); production
      * code gets the real GitHub Releases source.
      */
-    constructor() : this(GitHubUpdateSource())
+    actual constructor() : this(GitHubUpdateSource())
 
     private val logger = BossLogger.forComponent("UpdateService")
 
