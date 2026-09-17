@@ -28,6 +28,7 @@ import ai.rever.boss.components.workspaces.workspaceManager
 import ai.rever.boss.consumePendingInitialProject
 import ai.rever.boss.consumePendingInitialTab
 import ai.rever.boss.health.WorkspaceHealthSources
+import ai.rever.boss.mcp.HostWorkspaceTools
 import ai.rever.boss.performance.BrowserTabInfo
 import ai.rever.boss.performance.EditorTabResourceInfo
 import ai.rever.boss.performance.PerformanceState
@@ -442,6 +443,12 @@ internal fun BossAppStartupEffects(state: BossAppState) {
 
         // Initialize TerminalAPIAccess so host code can access terminal via the plugin system
         TerminalAPIAccess.initialize(plugin)
+
+        // Expose the host's own open_workspace MCP tool (#780) so an agent can bootstrap a
+        // Space without a human clicking the UI first. Registered once per process; the
+        // tool resolves its window at invoke time, so whichever window's effect ran first
+        // is not privileged.
+        HostWorkspaceTools.ensureRegistered()
 
         // Initialize EditorAPIAccess so host code can access editor settings via the plugin system
         ai.rever.boss.services.editor.EditorAPIAccess
