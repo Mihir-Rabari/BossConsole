@@ -2216,8 +2216,10 @@ confirms the displayed counts and scope. These are explicit tool-name rules,
 not provider trust: future tools are not automatically granted access.
 `McpPolicyEngine.setSectionPolicies` writes the reviewed section atomically,
 checks every prior rule and tool/provider revocation stamp, refuses provider DENY
-and unreadable policy files, and invalidates queued grants/session trust after a
-successful save. Keep these checks when changing section UI; sequential calls to
+and unreadable policy files, and invalidates queued grants after a
+successful save, dropping session trust only for the (providerId, toolName)
+pairs the write changed (#815); other providers' same-named grants survive.
+Keep these checks when changing section UI; sequential calls to
 `setToolPolicy` would permit partial application and stale overwrites. Individual
 reset controls remain available below the sections.
 
