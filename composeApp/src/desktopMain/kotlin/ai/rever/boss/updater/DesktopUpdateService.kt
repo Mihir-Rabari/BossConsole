@@ -46,14 +46,20 @@ internal fun validateUpdateAssetName(assetName: String) {
     }
 }
 
-actual class UpdateService(
+actual class UpdateService internal constructor(
     /**
      * Dedicated GitHub source used only to recover a download if the primary URL
-     * fails. Injectable so tests can point the fallback at a server they control;
-     * the default is the real GitHub Releases source.
+     * fails. Injectable so tests can point the fallback at a server they control.
      */
-    private val gitHubSource: UpdateSource = GitHubUpdateSource(),
+    private val gitHubSource: UpdateSource,
 ) {
+    /**
+     * Matches the common `expect class UpdateService()` shape (expect/actual
+     * constructor matching does not consider default parameter values); production
+     * code gets the real GitHub Releases source.
+     */
+    constructor() : this(GitHubUpdateSource())
+
     private val logger = BossLogger.forComponent("UpdateService")
 
     /**
