@@ -143,6 +143,51 @@ class HostWorkspaceToolsTest {
             assertTrue(result.text.contains("No open BOSS window"), result.text)
         }
 
+    // ----------------------------------- the boss:// path gate the folder deep link applies too
+
+    @Test
+    fun `a shell-shaped path is rejected even though the directory exists`() =
+        runBlocking {
+            // The directory genuinely exists, so only the security gate can refuse it.
+            val project = createTempDirectory("host-tools-project").resolve("legit;injected").toFile().apply { mkdirs() }
+
+            val result = core().invoke(HostWorkspaceTools.OPEN_WORKSPACE_TOOL_NAME, """{"path":"${project.path}"}""")
+
+            assertTrue(result.isError)
+            assertTrue(result.text.contains("deep link"), result.text)
+            assertTrue(result.text.contains("absolute"), result.text)
+        }
+
+    @Test
+    fun `a traversal-shaped path is rejected even though it resolves to the project`() =
+        runBlocking {
+            val project = createTempDirectory("host-tools-project")
+            val viaTraversal = project.resolve("../${project.fileName}")
+
+            // Premise: the path does resolve to an existing directory, so only the
+            // security gate can refuse it.
+            assertTrue(File(viaTraversal.toString()).isDirectory, "test premise: $viaTraversal")
+
+            val result = core().invoke(HostWorkspaceTools.OPEN_WORKSPACE_TOOL_NAME, """{"path":"$viaTraversal"}""")
+
+            assertTrue(result.isError)
+            assertTrue(result.text.contains("deep link"), result.text)
+            assertTrue(result.text.contains("absolute"), result.text)
+        }
+
+    @Test
+    fun `a plain absolute path the deep-link rules accept still opens`() =
+        runBlocking {
+            SplitViewStateRegistry.register(windowId, SplitViewState(tabRegistry, windowId))
+            val project = createTempDirectory("host-tools-project")
+
+            val result = core().invoke(HostWorkspaceTools.OPEN_WORKSPACE_TOOL_NAME, """{"path":"$project"}""")
+
+            assertFalse(result.isError, result.text)
+            val payload = Json.parseToJsonElement(result.text).jsonObject
+            assertEquals("opened", payload["status"]?.jsonPrimitive?.content)
+        }
+
     // ------------------------------------------------- the happy path, headless but through the real chain
 
     @Test

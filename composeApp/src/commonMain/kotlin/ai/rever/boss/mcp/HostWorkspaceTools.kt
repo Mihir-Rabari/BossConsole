@@ -1,5 +1,6 @@
 package ai.rever.boss.mcp
 
+import ai.rever.boss.cli.CLISecurityValidator
 import ai.rever.boss.components.window_panel.SplitViewState
 import ai.rever.boss.components.window_panel.SplitViewStateRegistry
 import ai.rever.boss.components.workspaces.LayoutWorkspace
@@ -136,6 +137,8 @@ internal object HostWorkspaceTools {
                 isError = true,
             )
         }
+        // Same gate the boss://folder deep link runs before opening a project folder.
+        rejectedByPathGate(expandedPath, rawPath)?.let { return it }
         val projectPath =
             withContext(Dispatchers.IO) { canonicalizeOrNull(expandedPath) }
                 ?: return McpToolResult("Path is not an existing directory: $rawPath", isError = true)
@@ -236,6 +239,29 @@ internal object HostWorkspaceTools {
                 isError = true,
             )
         }
+    }
+
+    /**
+     * The same [CLISecurityValidator.isValidPath] gate the boss://folder deep link runs
+     * before opening a project folder (DeepLinkHandler.resolveFolder). A connected MCP
+     * client is no more trusted than a web page, so both surfaces share one definition
+     * of an acceptable project path, and a shell-shaped or traversal path fails closed
+     * here instead of opening. Returns the error an agent can act on, or null when the
+     * path passes the gate.
+     */
+    private fun rejectedByPathGate(
+        expandedPath: String,
+        rawPath: String,
+    ): McpToolResult? {
+        if (CLISecurityValidator.isValidPath(expandedPath)) {
+            return null
+        }
+        return McpToolResult(
+            "Refusing to open '$rawPath': the path contains characters the boss:// folder deep " +
+                "link rejects for the same operation (`..`, or shell metacharacters like `;`, `&`, " +
+                "`|`, `\$` and a backtick). Pass a plain absolute path to the project directory instead.",
+            isError = true,
+        )
     }
 
     /**
