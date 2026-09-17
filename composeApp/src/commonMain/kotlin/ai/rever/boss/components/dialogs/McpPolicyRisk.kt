@@ -1,7 +1,7 @@
 package ai.rever.boss.components.dialogs
 
-import ai.rever.boss.mcp.McpPolicyAction
 import ai.rever.boss.mcp.McpMutatingToolCatalog
+import ai.rever.boss.mcp.McpPolicyAction
 import ai.rever.boss.mcp.sandbox.DefaultMcpRiskEvaluator
 import ai.rever.boss.mcp.sandbox.McpRiskLevel
 import ai.rever.boss.plugin.api.McpToolArgs

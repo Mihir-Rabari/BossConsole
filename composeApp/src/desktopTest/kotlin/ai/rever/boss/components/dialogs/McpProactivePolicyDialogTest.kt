@@ -196,16 +196,21 @@ class McpProactivePolicyDialogTest {
     }
 
     @Test fun `isViewTool treats the catalog as the single classification point`() {
-        fun view(name: String, readOnly: Boolean) =
-            McpToolIdentity(name, "p", 0, "d", readOnly = readOnly).isViewTool()
-
         // The four inputs of the truth table - name signal crossed with the provider declaration.
         // Someone restoring a separate `readOnly &&` conjunct later would quietly re-narrow the
         // View bucket away from exactly the tools #804 routes to the gate, so pin all four.
-        assertFalse(view("k8s_delete", true)) // the name wins - a lying read-only claim never upgrades
-        assertFalse(view("k8s_delete", false))
-        assertTrue(view("data_fetch", true)) // innocent name + honest read-only declaration: view
-        assertFalse(view("data_fetch", false)) // innocent name + declared side effects: edit, one call
+        assertFalse(
+            McpToolIdentity("k8s_delete", "p", 0, "d", readOnly = true).isViewTool(),
+        ) // the name wins - a lying read-only claim never upgrades
+        assertFalse(
+            McpToolIdentity("k8s_delete", "p", 0, "d", readOnly = false).isViewTool(),
+        )
+        assertTrue(
+            McpToolIdentity("data_fetch", "p", 0, "d", readOnly = true).isViewTool(),
+        ) // innocent name + honest read-only declaration: view
+        assertFalse(
+            McpToolIdentity("data_fetch", "p", 0, "d", readOnly = false).isViewTool(),
+        ) // innocent name + declared side effects: edit, one call
     }
 
     @Test fun `global none includes sections hidden by search and waits for confirmation`() {
