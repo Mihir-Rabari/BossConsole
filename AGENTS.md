@@ -806,9 +806,12 @@ restart. There is no Settings row and no per-site exclusion.
   startup restore, the top bar picker, the CLI, deep links and the KERNEL-mode gRPC
   bridge. Project paths routinely contain usernames, so this widens *when* a filesystem
   path reaches every installed plugin, not *what* - the same install-time-gating stance
-  as the bus above applies. In particular, `boss://` links can originate outside BOSS and
-  every non-terminal deep link currently bypasses `DeepLinkOrigin` confirmation, so an
-  externally opened project link can trigger this broadcast without operator confirmation.
+  as the bus above applies. In particular, `boss://` links can originate outside BOSS.
+  `boss://plugin` action links are refused unless they come from the operator's own
+  `boss` invocation, and `boss://workspace` loads are confirmed when the Space carries
+  terminal commands (`pluginActionDisposition` / `spaceLoadDisposition`), but every other
+  deep link still bypasses `DeepLinkOrigin` confirmation, so an externally opened project
+  link can trigger this broadcast without operator confirmation.
   It is recorded here because this paragraph is the canonical list of what a third-party
   plugin can observe.
 - **`PluginContext.projectSearchProvider` is the first UNGATED WRITE surface.**

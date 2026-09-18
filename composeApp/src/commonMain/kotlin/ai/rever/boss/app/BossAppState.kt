@@ -191,6 +191,10 @@ internal class BossAppState(
     // Keep every external request until the operator answers its own prompt.
     val terminalCommandApprovals = TerminalCommandApprovalQueue()
 
+    // Same contract for an externally requested Space load: the window holds
+    // the parsed Space until the operator has seen every command it would run.
+    val spaceLoadApprovals = SpaceLoadApprovalQueue()
+
     // An MCP tool execution requested by an AI agent that is suspended waiting
     // for operator approval under an ASK policy.
     var pendingMcpApproval by mutableStateOf<McpApprovalRequest?>(null)

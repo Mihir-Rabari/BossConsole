@@ -35,7 +35,11 @@ class CLICommandHandler private constructor() {
     // the command may run unattended, and a queue that dropped it would turn a
     // cold-start request into an unattributed one.
     private val terminalReadinessQueue = ReadinessQueue<CLICommand.OpenTerminal>()
-    private val workspaceReadinessQueue = ReadinessQueue<String>()
+
+    // Same contract as the terminal queue above: the origin decides whether an
+    // external load may proceed, and a queue that dropped it would turn a
+    // cold-start request into an unattributed one.
+    private val workspaceReadinessQueue = ReadinessQueue<CLICommand.LoadWorkspace>()
     private val fileReadinessQueue = ReadinessQueue<String>()
 
     // Service references - set during initialization
@@ -146,10 +150,14 @@ class CLICommandHandler private constructor() {
 
         // Process queued workspace loads
         scope.launch {
-            queuedWorkspaces.forEach { configPath ->
+            queuedWorkspaces.forEach { queued ->
                 try {
-                    logger.debug(LogCategory.SYSTEM, "Processing queued workspace", mapOf("path" to configPath))
-                    handleLoadWorkspace(configPath)
+                    logger.debug(
+                        LogCategory.SYSTEM,
+                        "Processing queued workspace",
+                        mapOf("path" to queued.configPath, "origin" to queued.origin.name),
+                    )
+                    handleLoadWorkspace(queued)
                 } catch (e: Exception) {
                     logger.error(LogCategory.SYSTEM, "Failed to process queued workspace", error = e)
                 }
@@ -178,7 +186,7 @@ class CLICommandHandler private constructor() {
                 }
 
                 is CLICommand.LoadWorkspace -> {
-                    handleLoadWorkspace(command.configPath)
+                    handleLoadWorkspace(command)
                 }
 
                 is CLICommand.OpenFile -> {
@@ -243,37 +251,60 @@ class CLICommandHandler private constructor() {
     }
 
     /**
-     * Loads workspace configuration from file.
-     *
-     * Emits workspace load event via WorkspaceEventBus for BossApp to handle.
-     * This ensures workspace loading has access to splitViewState and workspaceManager.
+     * Loads workspace configuration from file, or queues the load until the
+     * workspace handler is ready (cold start). Guards the file itself —
+     * existence, readability, shell-safe path — then defers to
+     * [emitWorkspaceLoadEvent] for dispatch.
      */
-    private suspend fun handleLoadWorkspace(configPath: String) {
-        // Validate file exists
-        val file = File(configPath).absoluteFile
-        if (!file.exists()) {
-            logger.warn(LogCategory.SYSTEM, "Workspace config not found", mapOf("path" to file.absolutePath))
-            return
-        }
-
-        if (!file.canRead()) {
-            logger.warn(LogCategory.SYSTEM, "Cannot read workspace config", mapOf("path" to file.absolutePath))
-            return
-        }
-
-        // Validate path for security (prevent path traversal)
-        if (!CLISecurityValidator.isValidPath(file.absolutePath)) {
-            logger.warn(LogCategory.SYSTEM, "Invalid workspace path (security check failed)", mapOf("path" to file.absolutePath))
+    private suspend fun handleLoadWorkspace(command: CLICommand.LoadWorkspace) {
+        val file = File(command.configPath).absoluteFile
+        if (!isLoadableWorkspaceFile(file)) {
             return
         }
 
         // Queue workspace if handler not ready (cold start)
         // This ensures workspace loads AFTER Last Session, preventing tab destruction
-        if (!workspaceReadinessQueue.enqueueOrClaimForCaller(file.absolutePath)) {
+        if (!workspaceReadinessQueue.enqueueOrClaimForCaller(command)) {
             logger.debug(LogCategory.SYSTEM, "Workspace handler not ready, queueing", mapOf("path" to file.absolutePath))
             return
         }
 
+        emitWorkspaceLoadEvent(command, file)
+    }
+
+    /**
+     * File-level gates every workspace load passes: existence, readability,
+     * and the path-traversal/shell-safety rules from [CLISecurityValidator].
+     */
+    private fun isLoadableWorkspaceFile(file: File): Boolean {
+        val rejection =
+            when {
+                !file.exists() -> "Workspace config not found"
+                !file.canRead() -> "Cannot read workspace config"
+                !CLISecurityValidator.isValidPath(file.absolutePath) -> "Invalid workspace path (security check failed)"
+                else -> null
+            }
+        if (rejection != null) {
+            logger.warn(LogCategory.SYSTEM, rejection, mapOf("path" to file.absolutePath))
+            return false
+        }
+        return true
+    }
+
+    /**
+     * Emits workspace load event via WorkspaceEventBus for BossApp to handle.
+     * This ensures workspace loading has access to splitViewState and workspaceManager.
+     *
+     * [command.origin] decides whether the window must confirm the load first:
+     * a Space some other program asked the OS to open may carry terminal
+     * commands that would be typed into a shell when it applies, so an
+     * external load is flagged for confirmation. The operator's own
+     * `boss workspace <file>` loads directly, exactly as before.
+     */
+    private suspend fun emitWorkspaceLoadEvent(
+        command: CLICommand.LoadWorkspace,
+        file: File,
+    ) {
         // Resolve the target window. Uses the registration/focus-gain-backed
         // lookup, not focusedWindowFlow alone — an MCP-driven or CLI caller
         // holds OS focus itself, so the flow can be null while a usable window
@@ -290,14 +321,20 @@ class CLICommandHandler private constructor() {
 
         // Emit workspace load event - BossApp will handle the actual loading
         // This is much simpler than trying to access splitViewState from CLI layer
+        val requiresConfirmation = !command.origin.isOperatorInitiated
         ai.rever.boss.components.events.WorkspaceEventBus
-            .loadWorkspace(file.absolutePath, sourceWindowId = focusedWindowId)
+            .loadWorkspace(
+                file.absolutePath,
+                sourceWindowId = focusedWindowId,
+                requiresConfirmation = requiresConfirmation,
+            )
         logger.debug(
             LogCategory.SYSTEM,
             "Emitted workspace load event",
             mapOf(
                 "path" to file.absolutePath,
                 "windowId" to focusedWindowId,
+                "requiresConfirmation" to requiresConfirmation,
             ),
         )
     }
@@ -595,8 +632,16 @@ sealed class CLICommand {
         val url: String,
     ) : CLICommand()
 
+    /**
+     * @property configPath the Space file to load.
+     * @property origin who asked. Defaults to [DeepLinkOrigin.EXTERNAL] so a
+     *   caller that does not say gets the cautious handling: an external load
+     *   whose Space carries terminal commands is confirmed by the operator
+     *   before anything loads (see `spaceLoadDisposition`).
+     */
     data class LoadWorkspace(
         val configPath: String,
+        val origin: DeepLinkOrigin = DeepLinkOrigin.EXTERNAL,
     ) : CLICommand()
 
     data class OpenFile(

@@ -23,8 +23,11 @@ import ai.rever.boss.components.plugin.claimMissingDependencyForWindow
 import ai.rever.boss.components.plugin.providers.createApplicationEventBus
 import ai.rever.boss.components.plugin.resolveRegisteredPanelId
 import ai.rever.boss.components.window_panel.SplitViewState
+import ai.rever.boss.components.workspaces.SpaceLoadDisposition
 import ai.rever.boss.components.workspaces.WorkspaceSerializer
 import ai.rever.boss.components.workspaces.applyWorkspace
+import ai.rever.boss.components.workspaces.spaceLoadDisposition
+import ai.rever.boss.components.workspaces.spaceTerminalCommands
 import ai.rever.boss.components.workspaces.spaceToOpen
 import ai.rever.boss.components.workspaces.workspaceManager
 import ai.rever.boss.dashboard.DashboardStatsManager
@@ -611,9 +614,53 @@ internal fun BossAppEventBusEffects(state: BossAppState) {
                         val json = file.readText()
                         val workspace = WorkspaceSerializer.deserialize(json)
 
-                        // Use the same loading pattern as the UI
-                        workspaceManager.loadWorkspace(workspace)
-                        applyWorkspace(workspace, splitViewState, windowProjectState)
+                        // An external load may carry terminal commands that would
+                        // be typed into a shell when the Space applies; the
+                        // operator sees and approves those first. Everything the
+                        // operator asked for themselves, and any Space with no
+                        // terminal commands, loads exactly as before.
+                        val commands = workspace.spaceTerminalCommands()
+                        when (spaceLoadDisposition(commands, event.requiresConfirmation)) {
+                            SpaceLoadDisposition.LOAD -> {
+                                // Use the same loading pattern as the UI
+                                workspaceManager.loadWorkspace(workspace)
+                                applyWorkspace(workspace, splitViewState, windowProjectState)
+                            }
+
+                            SpaceLoadDisposition.CONFIRM -> {
+                                val request = PendingSpaceLoad(workspace, event.workspacePath)
+                                if (state.spaceLoadApprovals.enqueue(request)) {
+                                    logger.info(
+                                        LogCategory.WORKSPACE,
+                                        "Holding an externally requested Space for confirmation",
+                                        mapOf(
+                                            "windowId" to windowId,
+                                            "path" to event.workspacePath,
+                                            "commands" to commands.size,
+                                        ),
+                                    )
+                                } else {
+                                    logger.warn(
+                                        LogCategory.WORKSPACE,
+                                        "External Space load refused: approval queue full",
+                                        mapOf("windowId" to windowId),
+                                    )
+                                }
+                            }
+
+                            SpaceLoadDisposition.REJECT -> {
+                                logger.warn(
+                                    LogCategory.WORKSPACE,
+                                    "External Space load refused before it could run: a terminal command is " +
+                                        "malformed, too long to display, or there are too many to list",
+                                    mapOf(
+                                        "windowId" to windowId,
+                                        "path" to event.workspacePath,
+                                        "commands" to commands.size,
+                                    ),
+                                )
+                            }
+                        }
                     }
                 } catch (e: Exception) {
                     logger.warn(

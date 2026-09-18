@@ -847,6 +847,33 @@ internal fun BossAppDialogs(state: BossAppState) {
         )
     }
 
+    // A Space that reached BOSS from outside the operator's own `boss`
+    // invocation and carries terminal commands. Loading it would type those
+    // commands into shells, so the operator says whether it loads — and sees
+    // every command and the file they came from first. The Space held in the
+    // queue is what loads on confirm, not a re-read of the path.
+    state.spaceLoadApprovals.current?.let { pending ->
+        SpaceLoadApprovalDialog(
+            request = pending,
+            pendingCount = state.spaceLoadApprovals.size,
+            onDismiss = { state.spaceLoadApprovals.consume(pending) },
+            onConfirm = confirm@{
+                // Consume before execution; the dialog also calls onDismiss after onConfirm.
+                // A stale callback must never execute or dismiss the next request.
+                if (!state.spaceLoadApprovals.consume(pending)) return@confirm
+                logger.info(
+                    LogCategory.WORKSPACE,
+                    "Operator confirmed loading an externally requested Space",
+                    mapOf("windowId" to windowId),
+                )
+                coroutineScope.launch {
+                    workspaceManager.loadWorkspace(pending.workspace)
+                    applyWorkspace(pending.workspace, splitViewState, windowProjectState)
+                }
+            },
+        )
+    }
+
     // Interactive approval dialog for governed MCP tools invoked by an AI agent
     state.pendingMcpApproval?.let { approvalRequest ->
         val pendingList by McpToolRegistryImpl.approvalBus.pendingList.collectAsState()
