@@ -1,5 +1,6 @@
 package ai.rever.boss.tabfullscreen
 
+import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -31,6 +32,12 @@ class TabFullscreenStateManagerTest {
         // pristine state through the public API alone: exitFullscreen clears the mark (and
         // flags whatever was still fullscreen for recreation), then clearRecreationSignal
         // drops that flag. After both calls both flows are null again.
+        TabFullscreenStateManager.exitFullscreen()
+        TabFullscreenStateManager.clearRecreationSignal()
+    }
+
+    @AfterTest
+    fun clearSingletonState() {
         TabFullscreenStateManager.exitFullscreen()
         TabFullscreenStateManager.clearRecreationSignal()
     }
@@ -98,6 +105,16 @@ class TabFullscreenStateManagerTest {
 
         assertEquals<String?>(null, TabFullscreenStateManager.needsViewStateRecreation.value)
         assertEquals<String?>(null, TabFullscreenStateManager.fullscreenTabId.value)
+    }
+
+    @Test
+    fun `a second exit preserves an unconsumed recreation signal`() {
+        TabFullscreenStateManager.enterFullscreen("tab-a")
+        TabFullscreenStateManager.exitFullscreen()
+
+        TabFullscreenStateManager.exitFullscreen()
+
+        assertEquals("tab-a", TabFullscreenStateManager.needsViewStateRecreation.value)
     }
 
     @Test
