@@ -357,7 +357,10 @@ class WorkspaceMcpToolProviderTest {
                     description = "",
                     layout =
                         SplitConfig.SinglePanel(
-                            PanelConfig("panel-loaded-traversal", listOf(TabConfig(type = "terminal", title = "Shell"))),
+                            PanelConfig(
+                                "panel-loaded-traversal",
+                                listOf(TabConfig(type = "terminal", title = "Shell")),
+                            ),
                         ),
                     projectPath = traversal,
                 )
@@ -438,7 +441,9 @@ class WorkspaceMcpToolProviderTest {
                         SplitConfig.SinglePanel(
                             PanelConfig(
                                 "panel-file-open",
-                                listOf(TabConfig(type = "terminal", title = "Terminal", workingDirectory = projectPath)),
+                                listOf(
+                                    TabConfig(type = "terminal", title = "Terminal", workingDirectory = projectPath),
+                                ),
                             ),
                         ),
                     projectPath = projectPath,

@@ -642,29 +642,37 @@ object WorkspaceMcpToolProvider : McpToolProvider {
     private suspend fun confineWorkspaceFilePath(rawPath: String): ProjectPathCheck {
         val dirCanonical =
             canonicalOnIo(getFileManager().getDefaultWorkspaceDirectory(), "the workspaces directory")
-                ?: return ProjectPathCheck(
+        val outcome =
+            if (dirCanonical == null) {
+                ProjectPathCheck(
                     null,
                     "The workspaces directory could not be resolved, so '$rawPath' cannot be " +
                         "verified as a workspace file; refusing.",
                 )
-        val fileCanonical =
-            canonicalOnIo(rawPath, "workspace path")
-                ?: return ProjectPathCheck(
-                    null,
-                    "Workspace path '$rawPath' could not be canonicalized; refusing.",
-                )
-        // Strictly inside: the workspaces directory itself is not a workspace file, and
-        // requiring the separator means '/workspaces' does not pass a sibling named
-        // '/workspaces2'.
-        if (fileCanonical != dirCanonical && !fileCanonical.startsWith(dirCanonical + File.separator)) {
-            return ProjectPathCheck(
-                null,
-                "Refusing to read '$rawPath': it is not inside the workspaces directory " +
-                    "('$dirCanonical'). Pass a workspace file BOSS saved there, or use 'path' to " +
-                    "open a project directory.",
-            )
-        }
-        return ProjectPathCheck(fileCanonical, null)
+            } else {
+                val fileCanonical = canonicalOnIo(rawPath, "workspace path")
+                if (fileCanonical == null) {
+                    ProjectPathCheck(
+                        null,
+                        "Workspace path '$rawPath' could not be canonicalized; refusing.",
+                    )
+                } else {
+                    // Strictly inside: the workspaces directory itself is not a workspace file, and
+                    // requiring the separator means '/workspaces' does not pass a sibling named
+                    // '/workspaces2'.
+                    if (fileCanonical != dirCanonical && !fileCanonical.startsWith(dirCanonical + File.separator)) {
+                        ProjectPathCheck(
+                            null,
+                            "Refusing to read '$rawPath': it is not inside the workspaces directory " +
+                                "('$dirCanonical'). Pass a workspace file BOSS saved there, or use 'path' to " +
+                                "open a project directory.",
+                        )
+                    } else {
+                        ProjectPathCheck(fileCanonical, null)
+                    }
+                }
+            }
+        return outcome
     }
 
     /** [path]'s canonical form on the IO dispatcher, logged and null when it cannot be resolved. */
@@ -690,20 +698,26 @@ object WorkspaceMcpToolProvider : McpToolProvider {
      * directories - the same destination the gated arguments serve, hence the same gate.
      */
     private suspend fun checkLoadedLayoutPaths(workspace: LayoutWorkspace): String? {
-        workspace.projectPath?.takeIf { it.isNotBlank() }?.let { saved ->
-            val check = checkProjectPath(saved)
-            if (check.canonicalPath == null) return check.error
-        }
-        for (tab in allTabs(workspace.layout)) {
-            if (tab.type != "terminal") continue
-            val saved = tab.workingDirectory?.takeIf { it.isNotBlank() } ?: continue
-            val check = checkProjectPath(saved)
-            if (check.canonicalPath == null) {
-                return "Refusing to open the workspace: terminal '${tab.title}' has a saved working " +
-                    "directory that was refused - ${check.error}"
+        val projectPathRefusal =
+            workspace.projectPath?.takeIf { it.isNotBlank() }?.let { saved ->
+                val check = checkProjectPath(saved)
+                if (check.canonicalPath == null) check.error else null
             }
-        }
-        return null
+        return projectPathRefusal
+            ?: allTabs(workspace.layout).firstNotNullOfOrNull { tab ->
+                val saved = tab.workingDirectory?.takeIf { it.isNotBlank() }
+                if (tab.type != "terminal" || saved == null) {
+                    null
+                } else {
+                    val check = checkProjectPath(saved)
+                    if (check.canonicalPath == null) {
+                        "Refusing to open the workspace: terminal '${tab.title}' has a saved working " +
+                            "directory that was refused - ${check.error}"
+                    } else {
+                        null
+                    }
+                }
+            }
     }
 
     /** Every [TabConfig] in [node], across all panels of the split tree. */
