@@ -415,6 +415,20 @@ object WorkspaceMcpToolProvider : McpToolProvider {
         if (!workspacePath.isNullOrBlank() && !CLISecurityValidator.isValidOpenTargetPath(workspacePath)) {
             return McpToolResult("Invalid workspace path (security check failed)", isError = true)
         }
+        // ...and the read is confined. The file's contents are deserialized and echoed back,
+        // so under a standing ALLOW an unconfined read answers two questions the caller
+        // should not be able to ask through this tool: "what is in that file" (an arbitrary
+        // file read) and "does that path exist" (an existence oracle). Canonicalising first
+        // resolves `..` and symlinks, so the containment below cannot be spelled around.
+        // Fail closed.
+        var workspaceFile: File? = null
+        if (!workspacePath.isNullOrBlank()) {
+            val confinement = confineWorkspaceFilePath(workspacePath)
+            if (confinement.canonicalPath == null) {
+                return McpToolResult(confinement.error ?: "Invalid workspace path", isError = true)
+            }
+            workspaceFile = File(confinement.canonicalPath)
+        }
         // projectPath ends up as a terminal working directory, the same destination the
         // `path` mode serves, so it gets the same gate: absolute, security-checked, and an
         // existing directory.
@@ -457,12 +471,17 @@ object WorkspaceMcpToolProvider : McpToolProvider {
         // Locate or create workspace
         var workspace: LayoutWorkspace? = null
         var isShippedTemplate = false
+        // Whether [workspace] came out of a file on disk - the workspacePath read above or
+        // the file manager's store - rather than a shipped template constant or a Space
+        // this call created. File contents are untrusted input exactly like an argument
+        // is (a saved file is hand-editable), which is what the path gate below keys on.
+        var loadedFromFile = false
 
-        if (!workspacePath.isNullOrBlank()) {
-            val file = File(workspacePath)
-            if (file.exists() && file.canRead()) {
-                val content = withContext(Dispatchers.IO) { file.readText() }
+        if (workspaceFile != null) {
+            if (workspaceFile.exists() && workspaceFile.canRead()) {
+                val content = withContext(Dispatchers.IO) { workspaceFile.readText() }
                 workspace = runCatching { WorkspaceSerializer.deserialize(content) }.getOrNull()
+                loadedFromFile = workspace != null
             } else if (!createIfAbsent) {
                 return McpToolResult("Workspace file not found: $workspacePath", isError = true)
             }
@@ -483,6 +502,9 @@ object WorkspaceMcpToolProvider : McpToolProvider {
                         WorkspaceFileManagerCommon.fileNameForId(workspaceId)
                     }
                 workspace = fileManager.loadWorkspace(fileName)
+                if (workspace != null) {
+                    loadedFromFile = true
+                }
             }
         }
 
@@ -502,8 +524,16 @@ object WorkspaceMcpToolProvider : McpToolProvider {
                 val wsName = name?.takeIf { it.isNotBlank() } ?: "Workspace $newId"
                 val rootPath = canonicalProjectPath ?: DefaultWorkingDirectory.nominalPath()
                 workspace = createDefaultWorkspace(newId, wsName, rootPath, openTerminal = openTerminal)
-                // Persist
-                getFileManager().saveWorkspace(workspace)
+                // Persist - and check the door, mirroring handleCreateWorkspace's check: a
+                // null return means nothing reached disk, and going on to apply and report
+                // success would hand back a "created" workspace that no later invocation,
+                // launch or other window can ever find.
+                if (getFileManager().saveWorkspace(workspace) == null) {
+                    return McpToolResult(
+                        "Failed to persist the new workspace '$newId'; nothing was saved.",
+                        isError = true,
+                    )
+                }
             } else {
                 return McpToolResult(
                     "Workspace '$workspaceId' not found. Specify createIfAbsent=true to create it.",
@@ -520,6 +550,19 @@ object WorkspaceMcpToolProvider : McpToolProvider {
                     "or remove the startup commands and invoke open_terminal with each command explicitly.",
                 isError = true,
             )
+        }
+
+        // Same gate for the same concept, wherever the value came from. A layout read off
+        // disk is untrusted input exactly like an argument is (any file in the workspaces
+        // directory is hand-editable), and its projectPath and terminal working directories
+        // land in the same destinations the gated 'projectPath' and open_terminal
+        // 'workingDirectory' arguments serve - so they pass the same checkProjectPath gate
+        // instead of flowing in verbatim. Shipped templates are exempt (their
+        // {projectPath} placeholders are resolved at apply time against the selected,
+        // gated project), and so is a Space this call just created (its root came from the
+        // gated argument or BOSS's own default directory).
+        if (loadedFromFile) {
+            checkLoadedLayoutPaths(workspace)?.let { return McpToolResult(it, isError = true) }
         }
 
         // Idempotency: Reopening an existing workspace does not duplicate it or disturb unrelated windows
@@ -547,13 +590,21 @@ object WorkspaceMcpToolProvider : McpToolProvider {
         // WorkspaceEventBus collector re-applies every load event aimed at it, so the
         // provider - which is itself the actor here - must not emit one; doing both would
         // apply the layout twice and tear down what the first apply just built.
-        if (splitViewState != null) {
-            switchWindowToSpace(
-                splitViewState,
-                WindowProjectStateRegistry.getOrCreate(targetWindowId),
-                workspace,
-            )
-        }
+        //
+        // The guard below used to fall through to the success reply when the window never
+        // registered its UI state, reporting an open that never happened - the same
+        // silent success path mode refuses at its own await. Fail here instead.
+        val stateToApply =
+            splitViewState
+                ?: return McpToolResult(
+                    "Window '$targetWindowId' did not register its UI state in time; retry.",
+                    isError = true,
+                )
+        switchWindowToSpace(
+            stateToApply,
+            WindowProjectStateRegistry.getOrCreate(targetWindowId),
+            workspace,
+        )
 
         var terminalInfo: JsonObject? = null
         if (openTerminal) {
@@ -574,6 +625,94 @@ object WorkspaceMcpToolProvider : McpToolProvider {
 
         return McpToolResult(resultObj.toString())
     }
+
+    /**
+     * The canonical form of [rawPath] after requiring it to name a file inside the
+     * workspaces directory, or the user-facing reason it was refused.
+     *
+     * open_workspace deserializes whatever file this path names and echoes its fields back,
+     * so confining the read to the workspaces directory - the one [getFileManager] persists
+     * and loads through, and therefore the place a caller's own workspace files actually
+     * live - is what stops the argument doubling as an arbitrary-file-read or an existence
+     * oracle. Canonicalising both sides first means `..` segments and symlinks are resolved
+     * before the comparison, so the containment cannot be spelled around. Fails closed on
+     * any resolution failure.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun confineWorkspaceFilePath(rawPath: String): ProjectPathCheck {
+        val dirCanonical =
+            canonicalOnIo(getFileManager().getDefaultWorkspaceDirectory(), "the workspaces directory")
+                ?: return ProjectPathCheck(
+                    null,
+                    "The workspaces directory could not be resolved, so '$rawPath' cannot be " +
+                        "verified as a workspace file; refusing.",
+                )
+        val fileCanonical =
+            canonicalOnIo(rawPath, "workspace path")
+                ?: return ProjectPathCheck(
+                    null,
+                    "Workspace path '$rawPath' could not be canonicalized; refusing.",
+                )
+        // Strictly inside: the workspaces directory itself is not a workspace file, and
+        // requiring the separator means '/workspaces' does not pass a sibling named
+        // '/workspaces2'.
+        if (fileCanonical != dirCanonical && !fileCanonical.startsWith(dirCanonical + File.separator)) {
+            return ProjectPathCheck(
+                null,
+                "Refusing to read '$rawPath': it is not inside the workspaces directory " +
+                    "('$dirCanonical'). Pass a workspace file BOSS saved there, or use 'path' to " +
+                    "open a project directory.",
+            )
+        }
+        return ProjectPathCheck(fileCanonical, null)
+    }
+
+    /** [path]'s canonical form on the IO dispatcher, logged and null when it cannot be resolved. */
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun canonicalOnIo(
+        path: String,
+        what: String,
+    ): String? =
+        withContext(Dispatchers.IO) {
+            try {
+                File(path).canonicalPath
+            } catch (t: Throwable) {
+                pathLog.warn(LogCategory.WORKSPACE, "Cannot canonicalize $what: $path", error = t)
+                null
+            }
+        }
+
+    /**
+     * The user-facing refusal for the first value in a file-loaded [workspace] that
+     * [checkProjectPath] rejects, or null when every path in it is openable: the
+     * workspace's own projectPath, then the working directory of each terminal tab.
+     * Those are the saved values [applyWorkspace] routes into terminal working
+     * directories - the same destination the gated arguments serve, hence the same gate.
+     */
+    private suspend fun checkLoadedLayoutPaths(workspace: LayoutWorkspace): String? {
+        workspace.projectPath?.takeIf { it.isNotBlank() }?.let { saved ->
+            val check = checkProjectPath(saved)
+            if (check.canonicalPath == null) return check.error
+        }
+        for (tab in allTabs(workspace.layout)) {
+            if (tab.type != "terminal") continue
+            val saved = tab.workingDirectory?.takeIf { it.isNotBlank() } ?: continue
+            val check = checkProjectPath(saved)
+            if (check.canonicalPath == null) {
+                return "Refusing to open the workspace: terminal '${tab.title}' has a saved working " +
+                    "directory that was refused - ${check.error}"
+            }
+        }
+        return null
+    }
+
+    /** Every [TabConfig] in [node], across all panels of the split tree. */
+    private fun allTabs(node: SplitConfig): List<TabConfig> =
+        when (node) {
+            is SinglePanel -> node.panel.tabs
+            is SplitConfig.VerticalSplit -> allTabs(node.left) + allTabs(node.right)
+            is SplitConfig.HorizontalSplit -> allTabs(node.top) + allTabs(node.bottom)
+        }
 
     /**
      * Path-based bootstrap mode of open_workspace (consolidated from #799): open [rawPath] as a

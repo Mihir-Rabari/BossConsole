@@ -241,19 +241,19 @@ class WorkspaceMcpToolProviderTest {
         }
 
     @Test
-    fun `open_workspace opens predefined workspace from cold start`() =
+    fun `open_workspace cold start is an honest error when the minted window never registers`() =
         runBlocking {
             val core = createTestCore()
 
             val args = """{"workspaceId":"${PredefinedWorkspaces.DUAL_TERMINAL_ID}"}"""
             val result = core.invoke("open_workspace", args)
-            assertFalse(result.isError, "Expected success: ${result.text}")
-
-            val json = Json.parseToJsonElement(result.text).jsonObject
-            assertTrue(json["success"]?.jsonPrimitive?.booleanOrNull == true)
-            assertEquals(PredefinedWorkspaces.DUAL_TERMINAL_ID, json["workspaceId"]?.jsonPrimitive?.content)
-            assertEquals("Dual Terminal", json["workspaceName"]?.jsonPrimitive?.content)
-            assertEquals("test-window-window-1", json["windowId"]?.jsonPrimitive?.content)
+            // The creator mints a window id, but nothing registers that window's UI state, so
+            // the Space cannot be applied: the tool reports that instead of the silent success
+            // it used to hand back for an open that never happened.
+            assertTrue(result.isError, result.text)
+            assertTrue(result.text.contains("did not register its UI state in time"), result.text)
+            assertTrue(result.text.contains("test-window-window-1"), result.text)
+            assertEquals(1, windowCreatorCalls)
         }
 
     @Test
@@ -268,23 +268,37 @@ class WorkspaceMcpToolProviderTest {
         }
 
     @Test
-    fun `open_workspace with createIfAbsent creates new workspace when missing`() =
+    fun `open_workspace with createIfAbsent persists the workspace even when the open is refused`() =
         runBlocking {
             val core = createTestCore()
 
             val args = """{"workspaceId":"custom-auto-ws","name":"Auto Created","createIfAbsent":true}"""
             val result = core.invoke("open_workspace", args)
-            assertFalse(result.isError, "Expected success: ${result.text}")
+            // The minted window never registers its UI state, so the open is refused at apply
+            // time with an honest error rather than the silent success it used to report.
+            assertTrue(result.isError, result.text)
+            assertTrue(result.text.contains("did not register its UI state in time"), result.text)
 
-            val json = Json.parseToJsonElement(result.text).jsonObject
-            assertTrue(json["success"]?.jsonPrimitive?.booleanOrNull == true)
-            assertEquals("custom-auto-ws", json["workspaceId"]?.jsonPrimitive?.content)
-            assertEquals("Auto Created", json["workspaceName"]?.jsonPrimitive?.content)
-
-            // Saved to disk
+            // The create path persisted the workspace before applying it, so a retry finds it.
             val loaded = fileManager.loadWorkspace(WorkspaceFileManagerCommon.fileNameForId("custom-auto-ws"))
             assertNotNull(loaded)
             assertEquals("Auto Created", loaded.name)
+        }
+
+    @Test
+    fun `open_workspace with createIfAbsent reports a persist failure instead of succeeding`() =
+        runBlocking {
+            val core = createTestCore()
+
+            // A directory squatting on the target file path makes the atomic save fail; the
+            // tool must say so rather than report a workspace no later call can ever find.
+            File(workspaceDir, WorkspaceFileManagerCommon.fileNameForId("squatted-ws")).mkdirs()
+
+            val args = """{"workspaceId":"squatted-ws","name":"Squat","createIfAbsent":true}"""
+            val result = core.invoke("open_workspace", args)
+            assertTrue(result.isError, result.text)
+            assertTrue(result.text.contains("Failed to persist"), result.text)
+            assertTrue(result.text.contains("nothing was saved"), result.text)
         }
 
     @Test
@@ -297,6 +311,154 @@ class WorkspaceMcpToolProviderTest {
             val result = core.invoke("open_workspace", args)
             assertTrue(result.isError)
             assertTrue(result.text.contains("Workspace file not found"))
+        }
+
+    @Test
+    fun `open_workspace refuses a workspacePath outside the workspaces directory`() =
+        runBlocking {
+            val core = createTestCore()
+
+            // An ordinary file that exists, but outside the directory BOSS saves workspaces in:
+            // the read must not double as an arbitrary-file read or an existence oracle.
+            val outsideDir = Files.createTempDirectory("ws-outside-dir").toFile()
+            tempDirs.add(outsideDir)
+            val outsideFile = File(outsideDir, "not-a-workspace.json").apply { writeText("{}") }
+
+            // A traversal spelling anchored at the workspaces directory - canonicalisation
+            // resolves it outside, so the containment cannot be spelled around - and the
+            // classic arbitrary-read target.
+            val escape = File(workspaceDir, "../escape.json").absolutePath
+            val passwd = "/etc/passwd"
+
+            for (candidate in listOf(outsideFile.absolutePath, escape, passwd)) {
+                val path = candidate.replace('\\', '/')
+                val result = core.invoke("open_workspace", """{"workspacePath":"$path"}""")
+                assertTrue(result.isError, "expected refusal for $path: ${result.text}")
+                assertTrue(result.text.contains("not inside the workspaces directory"), result.text)
+            }
+        }
+
+    @Test
+    fun `open_workspace refuses traversal paths saved in a loaded workspace file`() =
+        runBlocking {
+            val windowId = "ws-loaded-gate-window"
+            val state = SplitViewState(stubTabRegistry, windowId)
+            createdSplitViewStates.add(state)
+            SplitViewStateRegistry.register(windowId, state)
+
+            val project = Files.createTempDirectory("ws-loaded-gate-project").toFile()
+            tempDirs.add(project)
+            val traversal = "${project.absolutePath.replace('\\', '/')}/../etc"
+
+            val workspace =
+                LayoutWorkspace(
+                    id = "loaded-traversal-space",
+                    name = "Loaded Traversal",
+                    description = "",
+                    layout =
+                        SplitConfig.SinglePanel(
+                            PanelConfig("panel-loaded-traversal", listOf(TabConfig(type = "terminal", title = "Shell"))),
+                        ),
+                    projectPath = traversal,
+                )
+            fileManager.saveWorkspace(workspace)
+
+            val core = createTestCore()
+            val savedPath =
+                File(workspaceDir, WorkspaceFileManagerCommon.fileNameForId(workspace.id))
+                    .absolutePath
+                    .replace('\\', '/')
+
+            // Via workspacePath: the read itself is allowed (the file is inside the workspaces
+            // directory), but the layout it carries routes its projectPath to a terminal cwd,
+            // so the saved traversal is refused exactly like the argument would be.
+            val byPath = core.invoke("open_workspace", """{"workspacePath":"$savedPath","windowId":"$windowId"}""")
+            assertTrue(byPath.isError, byPath.text)
+            assertTrue(byPath.text.contains("Refusing to open"), byPath.text)
+
+            // Via workspaceId: the same file through the id door is refused too.
+            val byId = core.invoke("open_workspace", """{"workspaceId":"${workspace.id}","windowId":"$windowId"}""")
+            assertTrue(byId.isError, byId.text)
+            assertTrue(byId.text.contains("Refusing to open"), byId.text)
+        }
+
+    @Test
+    fun `open_workspace refuses a traversal working directory saved in a terminal tab`() =
+        runBlocking {
+            val windowId = "ws-loaded-tab-window"
+            val state = SplitViewState(stubTabRegistry, windowId)
+            createdSplitViewStates.add(state)
+            SplitViewStateRegistry.register(windowId, state)
+
+            val project = Files.createTempDirectory("ws-loaded-tab-project").toFile()
+            tempDirs.add(project)
+            val traversal = "${project.absolutePath.replace('\\', '/')}/../etc"
+
+            val workspace =
+                LayoutWorkspace(
+                    id = "loaded-tab-traversal-space",
+                    name = "Loaded Tab Traversal",
+                    description = "",
+                    layout =
+                        SplitConfig.SinglePanel(
+                            PanelConfig(
+                                "panel-loaded-tab",
+                                listOf(TabConfig(type = "terminal", title = "Shell", workingDirectory = traversal)),
+                            ),
+                        ),
+                    projectPath = project.absolutePath.replace('\\', '/'),
+                )
+            fileManager.saveWorkspace(workspace)
+
+            val core = createTestCore()
+            val result = core.invoke("open_workspace", """{"workspaceId":"${workspace.id}","windowId":"$windowId"}""")
+            assertTrue(result.isError, result.text)
+            assertTrue(result.text.contains("Refusing to open the workspace"), result.text)
+            assertTrue(result.text.contains("terminal 'Shell'"), result.text)
+        }
+
+    @Test
+    fun `open_workspace opens a valid workspace file inside the workspaces directory`() =
+        runBlocking {
+            val windowId = "ws-file-open-window"
+            val state = SplitViewState(stubTabRegistry, windowId)
+            createdSplitViewStates.add(state)
+            SplitViewStateRegistry.register(windowId, state)
+
+            val project = Files.createTempDirectory("ws-file-open-project").toFile()
+            tempDirs.add(project)
+            val projectPath = project.canonicalPath.replace('\\', '/')
+
+            val workspace =
+                LayoutWorkspace(
+                    id = "file-open-space",
+                    name = "File Open",
+                    description = "",
+                    layout =
+                        SplitConfig.SinglePanel(
+                            PanelConfig(
+                                "panel-file-open",
+                                listOf(TabConfig(type = "terminal", title = "Terminal", workingDirectory = projectPath)),
+                            ),
+                        ),
+                    projectPath = projectPath,
+                )
+            fileManager.saveWorkspace(workspace)
+
+            val core = createTestCore()
+            val savedPath =
+                File(workspaceDir, WorkspaceFileManagerCommon.fileNameForId(workspace.id))
+                    .absolutePath
+                    .replace('\\', '/')
+            val result = core.invoke("open_workspace", """{"workspacePath":"$savedPath","windowId":"$windowId"}""")
+            assertFalse(result.isError, "Expected success: ${result.text}")
+
+            val json = Json.parseToJsonElement(result.text).jsonObject
+            assertTrue(json["success"]?.jsonPrimitive?.booleanOrNull == true)
+            assertEquals("file-open-space", json["workspaceId"]?.jsonPrimitive?.content)
+            assertEquals("File Open", json["workspaceName"]?.jsonPrimitive?.content)
+            assertEquals(windowId, json["windowId"]?.jsonPrimitive?.content)
+            assertEquals(projectPath, json["projectPath"]?.jsonPrimitive?.content)
         }
 
     @Test
@@ -912,7 +1074,11 @@ class WorkspaceMcpToolProviderTest {
                     "open_workspace",
                     """{"workspaceId":"disposable-env","name":"Env","createIfAbsent":true}""",
                 )
-            assertFalse(createResult.isError, createResult.text)
+            // The minted window never registers its UI state, so the open is refused at apply
+            // time; the create path persisted the Space first, which is what the rest of this
+            // test exercises.
+            assertTrue(createResult.isError, createResult.text)
+            assertTrue(createResult.text.contains("did not register its UI state in time"), createResult.text)
             assertNotNull(fileManager.loadWorkspace(WorkspaceFileManagerCommon.fileNameForId("disposable-env")))
 
             // Nothing is released and nothing is deleted, so the tool says so instead of
