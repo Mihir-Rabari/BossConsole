@@ -470,8 +470,12 @@ class RunConfigurationConcurrencyTest {
         val before = tempFile.readText()
         assertTrue(before.isNotBlank(), "The seeded settings file should hold valid JSON")
 
-        assertTrue(tempDir.setWritable(false), "The temp directory must become unwritable to inject the failure")
+        val permissionChanged = tempDir.setWritable(false)
         try {
+            assumeTrue(
+                permissionChanged && !Files.isWritable(tempDir.toPath()),
+                "This environment does not enforce the unwritable-directory failure injection",
+            )
             // Persistence failures are logged and swallowed (best-effort persistence): the
             // caller must not see an exception.
             runBlocking {
