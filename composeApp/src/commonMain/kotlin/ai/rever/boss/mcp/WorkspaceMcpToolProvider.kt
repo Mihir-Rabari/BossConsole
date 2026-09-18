@@ -802,10 +802,13 @@ object WorkspaceMcpToolProvider : McpToolProvider {
      * is gated by `DeepLinkOrigin` (an EXTERNAL link is shown to the operator first), while an
      * MCP invocation is gated by the mutating gate this tool trips by name and by its
      * `readOnly = false` declaration - ASK by default, with the approval dialog the operator's
-     * confirmation. A persisted "Always Allow" on `open_terminal` therefore runs later
-     * invocations unconfirmed, so the grant is as strong as an unconfirmed deep link; the
-     * command still passes [CLISecurityValidator.isValidCommand] (shape only) and the risk
-     * evaluator (HIGH, CRITICAL for destructive patterns) on every call.
+     * confirmation. A persisted "Always Allow" on `open_terminal` runs later invocations
+     * unconfirmed only while each call's arguments stay below CRITICAL: the policy consult
+     * weighs the real `command`, and one the risk evaluator rates CRITICAL (a destructive
+     * pattern) re-opens the approval dialog even under the standing grant, so "Always Allow"
+     * never becomes a blanket approval for commands the operator was never shown. Every
+     * call still passes [CLISecurityValidator.isValidCommand] (shape only) and the
+     * argument-aware risk evaluator.
      */
     @Suppress("ReturnCount")
     private suspend fun handleOpenTerminal(args: McpToolArgs): McpToolResult {

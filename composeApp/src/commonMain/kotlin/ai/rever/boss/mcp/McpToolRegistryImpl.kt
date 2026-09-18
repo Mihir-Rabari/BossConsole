@@ -2,6 +2,7 @@ package ai.rever.boss.mcp
 
 import ai.rever.boss.components.bars.horizontal.StatusMessageManager
 import ai.rever.boss.mcp.sandbox.DefaultMcpRiskEvaluator
+import ai.rever.boss.mcp.sandbox.McpRiskLevel
 import ai.rever.boss.plugin.api.McpToolArgs
 import ai.rever.boss.plugin.api.McpToolDefinition
 import ai.rever.boss.plugin.api.McpToolProvider
@@ -753,7 +754,9 @@ internal class McpToolRegistryCore(
         // this invocation: a tool that declared side effects classifies as mutating whatever
         // its name says (#804), so it gets the mutating default - ASK under the factory
         // config - rather than being auto-allowed for avoiding the catalog's name patterns.
-        val policy = policyEngine.policyFor(toolName, tool.providerId, tool.definition.readOnly)
+        // The parsed arguments ride along for the same reason: the consult classifies THIS
+        // invocation, not an empty-arguments stand-in for it.
+        val policy = policyEngine.policyFor(toolName, tool.providerId, tool.definition.readOnly, args)
         val startTime = System.nanoTime()
         var disposition = McpApprovalDisposition.AUTO_ALLOWED
         var result: McpToolResult? = null
@@ -961,42 +964,87 @@ internal class McpToolRegistryCore(
             }
 
             McpPolicyAction.ALLOW -> {
-                McpApprovalDisposition.AUTO_ALLOWED to null
+                if (argumentsEscalateToCritical(tool.definition.name, args)) {
+                    logger.warn(
+                        LogCategory.SYSTEM,
+                        "Standing ALLOW re-asked: this invocation's arguments rate CRITICAL",
+                        mapOf("tool" to tool.definition.name, "provider" to tool.providerId),
+                    )
+                    askAuthorization(tool, args, revocation)
+                } else {
+                    McpApprovalDisposition.AUTO_ALLOWED to null
+                }
             }
 
             McpPolicyAction.ASK -> {
-                when (
-                    val decision =
-                        approvalBus.requestApproval(
-                            tool.definition.name,
-                            tool.providerId,
-                            McpArgumentSanitizer.parseArguments(args.raw),
-                            riskAssessment = DefaultMcpRiskEvaluator().evaluateRisk(tool.definition.name, args),
-                            declaredReadOnly = tool.definition.readOnly,
-                        )
-                ) {
-                    is McpApprovalDecision.Approved -> {
-                        approvedAuthorization(tool, decision, revocation)
-                    }
+                askAuthorization(tool, args, revocation)
+            }
+        }
 
-                    is McpApprovalDecision.Denied -> {
-                        val disposition =
-                            if (decision.persistPolicy) {
-                                persistentDenialDisposition(tool, revocation)
-                            } else {
-                                McpApprovalDisposition.DENIED_BY_OPERATOR
-                            }
-                        disposition to "MCP tool rejected by operator: ${decision.reason}"
-                    }
+    /**
+     * Whether THIS invocation's [args] are what rate it CRITICAL when the tool without them
+     * is not: the argument-driven escalation no standing ALLOW - a persisted rule, provider
+     * trust, session trust - ever covered, because the operator answered for the tool as
+     * they saw it, not for every command an agent can later type into it. A single
+     * "Always Allow" on a shell tool must not become unattended execution for a destructive
+     * command the approval dialog never showed.
+     *
+     * The argument-free baseline is what keeps the comparison honest for tools that are
+     * intrinsically CRITICAL (`docker_rm`, `helm_uninstall`, `secret_get`): that risk is the
+     * tool's own, visible in its name at grant time, and re-asking it on every call would
+     * add no decision the operator has not already made - only training to click prompts
+     * away. Only the delta between what a grant covered and what this call adds goes back
+     * to the operator.
+     */
+    private fun argumentsEscalateToCritical(
+        toolName: String,
+        args: McpToolArgs,
+    ): Boolean {
+        val evaluator = DefaultMcpRiskEvaluator()
+        if (evaluator.evaluateRisk(toolName, args).level < McpRiskLevel.CRITICAL) return false
+        return evaluator.evaluateRisk(toolName, McpToolArgs(emptyMap())).level < McpRiskLevel.CRITICAL
+    }
 
-                    McpApprovalDecision.QueueFull -> {
-                        McpApprovalDisposition.QUEUE_FULL to "MCP approval queue is full; no operator decision was made"
-                    }
+    /**
+     * Suspend on the operator's answer for this invocation: the prompt the ASK default
+     * routes to, and the one the CRITICAL re-ask under a standing ALLOW lands on - same
+     * dialog, same operator, same dispositions either way.
+     */
+    private suspend fun askAuthorization(
+        tool: RegisteredMcpTool,
+        args: McpToolArgs,
+        revocation: Long,
+    ): Pair<McpApprovalDisposition, String?> =
+        when (
+            val decision =
+                approvalBus.requestApproval(
+                    tool.definition.name,
+                    tool.providerId,
+                    McpArgumentSanitizer.parseArguments(args.raw),
+                    riskAssessment = DefaultMcpRiskEvaluator().evaluateRisk(tool.definition.name, args),
+                    declaredReadOnly = tool.definition.readOnly,
+                )
+        ) {
+            is McpApprovalDecision.Approved -> {
+                approvedAuthorization(tool, decision, revocation)
+            }
 
-                    McpApprovalDecision.Timeout -> {
-                        McpApprovalDisposition.TIMEOUT to "MCP tool timed out waiting for operator approval"
+            is McpApprovalDecision.Denied -> {
+                val disposition =
+                    if (decision.persistPolicy) {
+                        persistentDenialDisposition(tool, revocation)
+                    } else {
+                        McpApprovalDisposition.DENIED_BY_OPERATOR
                     }
-                }
+                disposition to "MCP tool rejected by operator: ${decision.reason}"
+            }
+
+            McpApprovalDecision.QueueFull -> {
+                McpApprovalDisposition.QUEUE_FULL to "MCP approval queue is full; no operator decision was made"
+            }
+
+            McpApprovalDecision.Timeout -> {
+                McpApprovalDisposition.TIMEOUT to "MCP tool timed out waiting for operator approval"
             }
         }
 

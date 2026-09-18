@@ -21,10 +21,12 @@ import ai.rever.boss.plugin.workspace.SplitConfig
 import ai.rever.boss.plugin.workspace.TabConfig
 import androidx.compose.runtime.Composable
 import com.arkivanov.decompose.ComponentContext
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
@@ -495,9 +497,25 @@ class WorkspaceMcpToolProviderTest {
     @Test
     fun `open_terminal rejects command with newlines or control characters`() =
         runBlocking {
-            val core = createTestCore()
+            // The provider-wide ALLOW below does not skip the operator for a command the
+            // risk evaluator rates CRITICAL (the second line here is destructive), so the
+            // call is re-asked - and approving it must STILL not carry the malformed
+            // command past the handler's own shape check.
+            val bus = McpApprovalBus(defaultTimeoutMs = 5000L)
+            val policyEngine = McpPolicyEngine(policyFile = null)
+            policyEngine.setProviderPolicy("boss-workspace", McpPolicyAction.ALLOW)
+            val core =
+                McpToolRegistryCore(
+                    disabledFile = null,
+                    policyEngine = policyEngine,
+                    approvalBus = bus,
+                )
+            core.registerProvider(WorkspaceMcpToolProvider)
             val args = """{"command":"echo hello\nrm -rf /"}"""
-            val result = core.invoke("open_terminal", args)
+            val call = async { core.invoke("open_terminal", args) }
+            val request = withTimeout(5_000) { bus.pendingList.first { it.isNotEmpty() } }.first()
+            bus.approve(request.id)
+            val result = call.await()
             assertTrue(result.isError)
             assertTrue(result.text.contains("security check failed"))
         }
