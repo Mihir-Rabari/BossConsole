@@ -78,6 +78,7 @@ class RunConfigurationConcurrencyTest {
             language = Language.KOTLIN,
             command = "run $index",
             workingDirectory = "/path/to/project",
+            // Keep round-trip assertions independent of the timestamp's time-varying default.
             timestamp = index.toLong(),
         )
 
@@ -462,7 +463,7 @@ class RunConfigurationConcurrencyTest {
         // Removing the parent directory's write permission makes File.createTempFile - the
         // first step of atomicWriteText - fail before the target is ever touched. POSIX
         // permission bits are what actually block the creation, so this only runs where they
-        // are enforced; the replace-stage test below covers the same guarantee everywhere.
+        // are enforced; the replace-stage test below still covers failed-write cleanup everywhere.
         assumeTrue(!System.getProperty("os.name").lowercase().contains("win"), "POSIX-only failure injection")
 
         val seeded = createConfig(6001)
@@ -592,14 +593,12 @@ class RunConfigurationConcurrencyTest {
                             // NIO shares the handle for deletion on Windows, so this observer
                             // does not itself block the atomic replace it is testing.
                             val text = Files.readString(tempFile.toPath())
-                            if (text.isNotEmpty()) {
-                                val decoded = runCatching { json.decodeFromString<RunConfigurationSettings>(text) }
-                                if (decoded.isFailure) {
-                                    torn++
-                                    lastTornSample = text.take(120)
-                                }
-                                reads++
+                            val decoded = runCatching { json.decodeFromString<RunConfigurationSettings>(text) }
+                            if (decoded.isFailure) {
+                                torn++
+                                lastTornSample = text.take(120)
                             }
+                            reads++
                         }
                     }
                     assertEquals(
@@ -613,7 +612,7 @@ class RunConfigurationConcurrencyTest {
             start.complete(Unit)
             awaitAll(updater, saver)
             writersFinished.complete(Unit)
-            reader.join()
+            reader.await()
 
             // The last full write must be exactly memory's final state.
             assertSettingsFileMatchesMemory()
