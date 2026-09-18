@@ -20,7 +20,6 @@ import kotlin.test.assertTrue
  * that defaults ALLOW would mask exactly the leaks these tests exist to catch.
  */
 class McpSessionTrustEdgeCasesTest {
-
     @Test
     fun `trust follows the provider id so a second window presenting the same provider shares it`() {
         val engine = McpPolicyEngine(policyFile = null)
