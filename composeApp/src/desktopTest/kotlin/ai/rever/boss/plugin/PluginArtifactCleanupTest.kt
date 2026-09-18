@@ -2,9 +2,11 @@ package ai.rever.boss.plugin
 
 import ai.rever.boss.plugin.loader.PluginBundledTrust
 import ai.rever.boss.plugin.loader.PluginSignatureSidecar
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import kotlin.io.path.createTempDirectory
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -68,7 +70,10 @@ class PluginArtifactCleanupTest {
         PluginArtifactCleanup.remove(PLUGIN, jar.absolutePath, realHooks(forgotten))
 
         assertFalse(jar.exists(), "the jar survived its own uninstall")
-        assertFalse(sig.exists(), "the .sig sidecar survived: a reused filename then hard-fails the next load of that name")
+        assertFalse(
+            sig.exists(),
+            "the .sig sidecar survived: a reused filename then hard-fails the next load of that name",
+        )
         assertFalse(unsignable.exists(), "the .nosig marker survived and keeps pinning the plugin as known-unsigned")
         assertFalse(trust.exists(), "the bundled-trust marker survived and would exempt the next JAR at this filename")
         assertTrue(neighbourJar.exists(), "deleted another plugin's jar")
@@ -84,9 +89,17 @@ class PluginArtifactCleanupTest {
         val root = tempDir()
         // Two windows can each hold their own copy of a plugin; PluginRemoval passes the other
         // windows' recorded jarPaths as additionalJarPaths, and half an uninstall is a reinstall.
-        val first = File(root, "window-a/probe.jar").apply { parentFile.mkdirs(); writeText("a") }
+        val first =
+            File(root, "window-a/probe.jar").apply {
+                parentFile.mkdirs()
+                writeText("a")
+            }
         val firstSig = File(PluginSignatureSidecar.pathFor(first.absolutePath)).apply { writeText("c2ln") }
-        val second = File(root, "window-b/probe.jar").apply { parentFile.mkdirs(); writeText("b") }
+        val second =
+            File(root, "window-b/probe.jar").apply {
+                parentFile.mkdirs()
+                writeText("b")
+            }
         val secondTrust = File(PluginBundledTrust.pathFor(second.absolutePath)).apply { writeText("digest") }
         val straggler = File(root, "window-b/straggler.jar").apply { writeText("not this plugin's uninstall") }
 
@@ -250,14 +263,18 @@ class PluginArtifactCleanupTest {
     }
 
     @Test
-    fun `a directory at the jar path is refused, not recursively swept`() {
+    fun `a non-empty directory at the jar path is refused, not recursively swept`() {
         val dir = tempDir()
         // A stale row can point at a directory - a renamed plugin dir, a bad hand-edit. The
         // default seam is a flat File.unlink, which refuses non-empty directories, and that is
         // the safe direction: this class must never escalate a wrong path into a recursive
         // sweep of whatever lives there.
         val mistaken = File(dir, "probe-1.0.0.jar").apply { mkdirs() }
-        val inside = File(mistaken, "nested/probe-1.0.0.jar").apply { parentFile.mkdirs(); writeText("do not touch") }
+        val inside =
+            File(mistaken, "nested/probe-1.0.0.jar").apply {
+                parentFile.mkdirs()
+                writeText("do not touch")
+            }
 
         val forgotten = mutableListOf<String>()
         PluginArtifactCleanup.remove(PLUGIN, mistaken.absolutePath, realHooks(forgotten))
@@ -273,12 +290,16 @@ class PluginArtifactCleanupTest {
         val elsewhere = tempDir()
         val target = File(elsewhere, "real-probe-1.0.0.jar").apply { writeText("the only copy") }
         val link = File(pluginDir, "probe-1.0.0.jar")
-        Files.createSymbolicLink(link.toPath(), target.toPath())
+        val linkCreated = runCatching { Files.createSymbolicLink(link.toPath(), target.toPath()) }
+        assumeTrue(linkCreated.isSuccess, "platform refuses symlink creation")
 
         val forgotten = mutableListOf<String>()
         PluginArtifactCleanup.remove(PLUGIN, link.absolutePath, realHooks(forgotten))
 
-        assertFalse(link.exists(), "the link itself survived the uninstall")
+        assertFalse(
+            Files.exists(link.toPath(), LinkOption.NOFOLLOW_LINKS),
+            "the link itself survived the uninstall",
+        )
         assertTrue(target.isFile, "the unlink escaped the link and destroyed the target file")
         assertEquals("the only copy", target.readText())
         assertEquals(listOf(PLUGIN), forgotten)
