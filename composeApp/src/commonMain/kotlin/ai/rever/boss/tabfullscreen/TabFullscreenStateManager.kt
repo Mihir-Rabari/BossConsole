@@ -33,7 +33,7 @@ object TabFullscreenStateManager {
     fun exitFullscreen() {
         val exitingTabId = _fullscreenTabId.value
         _fullscreenTabId.value = null
-        // Signal that this tab needs its BrowserViewState recreated
+        // Preserve an earlier unconsumed request when no fullscreen surface exited.
         if (exitingTabId != null) {
             _needsViewStateRecreation.value = exitingTabId
         }
