@@ -78,6 +78,7 @@ class RunConfigurationConcurrencyTest {
             language = Language.KOTLIN,
             command = "run $index",
             workingDirectory = "/path/to/project",
+            timestamp = index.toLong(),
         )
 
     @Test
