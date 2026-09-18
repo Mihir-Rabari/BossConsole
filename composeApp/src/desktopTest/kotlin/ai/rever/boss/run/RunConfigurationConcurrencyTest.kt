@@ -587,7 +587,6 @@ class RunConfigurationConcurrencyTest {
                     var reads = 0
                     var torn = 0
                     var lastTornSample: String? = null
-                    readerReady.complete(Unit)
                     while (isActive && !writersFinished.isCompleted) {
                         if (tempFile.exists()) {
                             // NIO shares the handle for deletion on Windows, so this observer
@@ -596,11 +595,13 @@ class RunConfigurationConcurrencyTest {
                             val decoded = runCatching { json.decodeFromString<RunConfigurationSettings>(text) }
                             if (decoded.isFailure) {
                                 torn++
-                                lastTornSample = text.take(120)
+                                lastTornSample = if (text.isEmpty()) "<empty target>" else text.take(120)
                             }
                             reads++
+                            if (!readerReady.isCompleted) readerReady.complete(Unit)
                         }
                     }
+                    if (!isActive) return@async
                     assertEquals(
                         0,
                         torn,
