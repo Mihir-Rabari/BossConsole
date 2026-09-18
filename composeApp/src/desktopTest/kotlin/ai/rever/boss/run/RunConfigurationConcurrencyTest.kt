@@ -615,7 +615,11 @@ class RunConfigurationConcurrencyTest {
             reader.join()
 
             // The last full write must be exactly memory's final state.
-            val diskSettings = json.decodeFromString<RunConfigurationSettings>(tempFile.readText())
-            assertEquals(RunConfigurationManager.currentSettings.value, diskSettings)
+            assertSettingsFileMatchesMemory()
         }
+
+    private fun assertSettingsFileMatchesMemory() {
+        val diskSettings = json.decodeFromString<RunConfigurationSettings>(tempFile.readText())
+        assertEquals(RunConfigurationManager.currentSettings.value, diskSettings)
+    }
 }
