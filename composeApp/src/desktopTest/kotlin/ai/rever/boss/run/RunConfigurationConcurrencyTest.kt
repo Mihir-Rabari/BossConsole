@@ -553,6 +553,7 @@ class RunConfigurationConcurrencyTest {
             val configB = createConfig(8002)
             RunConfigurationManager.addConfiguration(configA)
             RunConfigurationManager.addConfiguration(configB)
+            assertTrue(tempFile.exists(), "The seeded settings file must exist before the reader starts")
 
             val rounds = 40
             val start = CompletableDeferred<Unit>()
@@ -587,27 +588,29 @@ class RunConfigurationConcurrencyTest {
                     var reads = 0
                     var torn = 0
                     var lastTornSample: String? = null
-                    while (isActive && !writersFinished.isCompleted) {
-                        if (tempFile.exists()) {
-                            // NIO shares the handle for deletion on Windows, so this observer
-                            // does not itself block the atomic replace it is testing.
-                            val text = Files.readString(tempFile.toPath())
-                            val decoded = runCatching { json.decodeFromString<RunConfigurationSettings>(text) }
-                            if (decoded.isFailure) {
-                                torn++
-                                lastTornSample = if (text.isEmpty()) "<empty target>" else text.take(120)
-                            }
-                            reads++
-                            if (!readerReady.isCompleted) readerReady.complete(Unit)
+
+                    fun sampleOnce() {
+                        // NIO shares the handle for deletion on Windows, so this observer
+                        // does not itself block the atomic replace it is testing.
+                        val text = Files.readString(tempFile.toPath())
+                        val decoded = runCatching { json.decodeFromString<RunConfigurationSettings>(text) }
+                        if (decoded.isFailure) {
+                            torn++
+                            lastTornSample = if (text.isEmpty()) "<empty target>" else text.take(120)
                         }
+                        reads++
                     }
-                    if (!isActive) return@async
+
+                    sampleOnce()
+                    readerReady.complete(Unit)
+                    while (isActive && !writersFinished.isCompleted) sampleOnce()
                     assertEquals(
                         0,
                         torn,
                         "Every read must see one complete snapshot; last torn sample: $lastTornSample",
                     )
-                    assertTrue(reads > 0, "The reader must have sampled the file while writes were in flight")
+                    if (!isActive) return@async
+                    assertTrue(reads > 0, "The reader must have sampled the file")
                 }
 
             start.complete(Unit)
