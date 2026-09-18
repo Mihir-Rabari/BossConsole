@@ -21,6 +21,7 @@ Deno.test("generateMobileRegistrationPage - should generate valid registration p
   mockClient.mockResponse('passkey_challenges', {
     data: {
       ...mockChallenge,
+      session_id: 'session-123',
       type: 'registration',
       expires_at: new Date(Date.now() + 60000).toISOString()
     },
@@ -142,6 +143,7 @@ Deno.test("generateMobileRegistrationPage - should update challenge status to in
   mockClient.mockResponse('passkey_challenges', {
     data: {
       ...mockChallenge,
+      session_id: 'session-123',
       type: 'registration',
       expires_at: new Date(Date.now() + 60000).toISOString()
     },
@@ -187,6 +189,7 @@ Deno.test("generateMobileAuthenticationPage - should generate valid authenticati
   mockClient.mockResponse('passkey_challenges', {
     data: {
       ...mockChallenge,
+      session_id: 'session-123',
       type: 'authentication',
       expires_at: new Date(Date.now() + 60000).toISOString()
     },
@@ -319,6 +322,7 @@ Deno.test("generateMobileAuthenticationPage - should reject non-existent credent
   mockClient.mockResponse('passkey_challenges', {
     data: {
       ...mockChallenge,
+      session_id: 'session-123',
       type: 'authentication',
       expires_at: new Date(Date.now() + 60000).toISOString()
     },
@@ -360,6 +364,7 @@ Deno.test("generateMobileAuthenticationPage - should reject inactive credential"
   mockClient.mockResponse('passkey_challenges', {
     data: {
       ...mockChallenge,
+      session_id: 'session-123',
       type: 'authentication',
       expires_at: new Date(Date.now() + 60000).toISOString()
     },
@@ -401,6 +406,7 @@ Deno.test("generateMobileAuthenticationPage - should update challenge status to 
   mockClient.mockResponse('passkey_challenges', {
     data: {
       ...mockChallenge,
+      session_id: 'session-123',
       type: 'authentication',
       expires_at: new Date(Date.now() + 60000).toISOString()
     },
@@ -449,6 +455,7 @@ Deno.test("generateMobileAuthenticationPage - should return credential metadata"
   mockClient.mockResponse('passkey_challenges', {
     data: {
       ...mockChallenge,
+      session_id: 'session-123',
       type: 'authentication',
       expires_at: new Date(Date.now() + 60000).toISOString()
     },
@@ -493,12 +500,347 @@ Deno.test("generateMobileAuthenticationPage - should return credential metadata"
   }
 })
 
+// ============================================================================
+// Session binding (#924): the mobile pages are public and unauthenticated,
+// so the sessionId query parameter must never be able to move an
+// already-bound ceremony's token handoff to another session.
+// ============================================================================
+
+Deno.test("generateMobileRegistrationPage - should refuse to rebind a bound challenge to an attacker's session", async () => {
+  const mockClient = createMockSupabaseClient()
+
+  // The victim's desktop bound the challenge to its session when the ceremony
+  // started; the attacker replays the public page URL with their own session
+  mockClient.mockResponse('passkey_challenges', {
+    data: {
+      ...mockChallenge,
+      type: 'registration',
+      session_id: 'session-victim',
+      expires_at: new Date(Date.now() + 60000).toISOString()
+    },
+    error: null
+  }, 'select')
+
+  const result = await generateMobileRegistrationPage(
+    mockClient as unknown as SupabaseClient,
+    'mock-challenge-base64',
+    'test@example.com',
+    'session-attacker',
+    'api.risaboss.com'
+  )
+
+  assertEquals(result.success, false)
+  if (!result.success) {
+    assertEquals(result.error, 'Challenge is already bound to another session')
+  }
+
+  // No write ran, so the row keeps the victim's binding and the completed
+  // ceremony's tokens can only reach the victim's session
+  assertEquals(
+    mockClient.getQueryHistory().some(h => h.operation === 'update'),
+    false
+  )
+})
+
+Deno.test("generateMobileRegistrationPage - should bind an unbound challenge to the session that first opens it", async () => {
+  const mockClient = createMockSupabaseClient()
+
+  // Challenge created without a session: the first page load claims the row
+  // through a compare-and-set on the still-null session_id column
+  mockClient.mockResponse('passkey_challenges', {
+    data: {
+      ...mockChallenge,
+      type: 'registration',
+      session_id: null,
+      expires_at: new Date(Date.now() + 60000).toISOString()
+    },
+    error: null
+  }, 'select')
+
+  mockClient.mockResponse('passkey_challenges', {
+    data: [{ id: 'challenge-789', session_id: 'session-123' }],
+    error: null
+  }, 'update')
+
+  const result = await generateMobileRegistrationPage(
+    mockClient as unknown as SupabaseClient,
+    'mock-challenge-base64',
+    'test@example.com',
+    'session-123',
+    'api.risaboss.com'
+  )
+
+  assertEquals(result.success, true)
+
+  const update = mockClient.getQueryHistory().find(h => h.operation === 'update')
+  assertExists(update)
+  assertEquals((update.params.data as Record<string, unknown>).session_id, 'session-123')
+  assertEquals((update.params.data as Record<string, unknown>).status, 'in_progress')
+})
+
+Deno.test("generateMobileRegistrationPage - should fail closed when the session bind write errors", async () => {
+  const mockClient = createMockSupabaseClient()
+
+  mockClient.mockResponse('passkey_challenges', {
+    data: {
+      ...mockChallenge,
+      type: 'registration',
+      session_id: null,
+      expires_at: new Date(Date.now() + 60000).toISOString()
+    },
+    error: null
+  }, 'select')
+
+  mockClient.mockResponse('passkey_challenges', {
+    data: null,
+    error: { message: 'connection reset' }
+  }, 'update')
+
+  const result = await generateMobileRegistrationPage(
+    mockClient as unknown as SupabaseClient,
+    'mock-challenge-base64',
+    'test@example.com',
+    'session-123',
+    'api.risaboss.com'
+  )
+
+  // A ceremony that cannot be bound to a session can never hand its tokens
+  // to the waiting desktop, so the page is refused rather than served unbound
+  assertEquals(result.success, false)
+  if (!result.success) {
+    assertEquals(result.error, 'Failed to bind challenge session')
+  }
+})
+
+Deno.test("generateMobileRegistrationPage - should fail closed when the bind race is lost to a different session", async () => {
+  const mockClient = createMockSupabaseClient()
+
+  // The read sees an unbound row, but a concurrent page load for the
+  // victim's session wins the compare-and-set between the read and the write
+  mockClient.mockResponse('passkey_challenges', {
+    data: {
+      ...mockChallenge,
+      type: 'registration',
+      session_id: null,
+      expires_at: new Date(Date.now() + 60000).toISOString()
+    },
+    error: null
+  }, 'select')
+
+  // Zero updated rows: the compare-and-set found the column no longer null
+  mockClient.mockResponse('passkey_challenges', {
+    data: [],
+    error: null
+  }, 'update')
+
+  mockClient.mockResponse('passkey_challenges', {
+    data: { challenge: 'mock-challenge-base64', session_id: 'session-victim' },
+    error: null
+  }, 'select', { match: { challenge: 'mock-challenge-base64' } })
+
+  const result = await generateMobileRegistrationPage(
+    mockClient as unknown as SupabaseClient,
+    'mock-challenge-base64',
+    'test@example.com',
+    'session-123',
+    'api.risaboss.com'
+  )
+
+  assertEquals(result.success, false)
+  if (!result.success) {
+    assertEquals(result.error, 'Challenge is already bound to another session')
+  }
+})
+
+Deno.test("generateMobileRegistrationPage - should fail closed when the bind race is lost and the row cannot be re-read", async () => {
+  const mockClient = createMockSupabaseClient()
+
+  mockClient.mockResponse('passkey_challenges', {
+    data: {
+      ...mockChallenge,
+      type: 'registration',
+      session_id: null,
+      expires_at: new Date(Date.now() + 60000).toISOString()
+    },
+    error: null
+  }, 'select')
+
+  mockClient.mockResponse('passkey_challenges', {
+    data: [],
+    error: null
+  }, 'update')
+
+  // The re-read that would confirm who won the race fails: fail closed
+  mockClient.mockResponse('passkey_challenges', {
+    data: null,
+    error: { code: 'PGRST116' }
+  }, 'select', { match: { challenge: 'mock-challenge-base64' } })
+
+  const result = await generateMobileRegistrationPage(
+    mockClient as unknown as SupabaseClient,
+    'mock-challenge-base64',
+    'test@example.com',
+    'session-123',
+    'api.risaboss.com'
+  )
+
+  assertEquals(result.success, false)
+  if (!result.success) {
+    assertEquals(result.error, 'Challenge is already bound to another session')
+  }
+})
+
+Deno.test("generateMobileRegistrationPage - a same-session reload never rewrites the binding", async () => {
+  const mockClient = createMockSupabaseClient()
+
+  mockClient.mockResponse('passkey_challenges', {
+    data: {
+      ...mockChallenge,
+      type: 'registration',
+      session_id: 'session-123',
+      expires_at: new Date(Date.now() + 60000).toISOString()
+    },
+    error: null
+  }, 'select')
+
+  const result = await generateMobileRegistrationPage(
+    mockClient as unknown as SupabaseClient,
+    'mock-challenge-base64',
+    'test@example.com',
+    'session-123',
+    'api.risaboss.com'
+  )
+
+  assertEquals(result.success, true)
+
+  // Only the status is rewritten; the session binding itself is immutable, so
+  // no number of reloads can move the handoff target
+  const update = mockClient.getQueryHistory().find(h => h.operation === 'update')
+  assertExists(update)
+  assertEquals('session_id' in (update.params.data as Record<string, unknown>), false)
+})
+
+Deno.test("generateMobileAuthenticationPage - should refuse to rebind a bound challenge to an attacker's session", async () => {
+  const mockClient = createMockSupabaseClient()
+
+  // The victim's desktop bound the challenge to its session when the ceremony
+  // started; the attacker replays the public page URL with their own session
+  mockClient.mockResponse('passkey_challenges', {
+    data: {
+      ...mockChallenge,
+      type: 'authentication',
+      session_id: 'session-victim',
+      expires_at: new Date(Date.now() + 60000).toISOString()
+    },
+    error: null
+  }, 'select')
+
+  const result = await generateMobileAuthenticationPage(
+    mockClient as unknown as SupabaseClient,
+    'mock-challenge-base64',
+    'test@example.com',
+    'session-attacker',
+    'credential-abc',
+    'api.risaboss.com'
+  )
+
+  assertEquals(result.success, false)
+  if (!result.success) {
+    assertEquals(result.error, 'Challenge is already bound to another session')
+  }
+
+  // The refusal happened before the credential lookup, and no write ran, so
+  // the token handoff can only ever reach the victim's session
+  assertEquals(
+    mockClient.getQueryHistory().some(h => h.operation === 'update'),
+    false
+  )
+  assertEquals(
+    mockClient.getQueryHistory().some(h => h.table === 'user_passkeys'),
+    false
+  )
+})
+
+Deno.test("generateMobileAuthenticationPage - should bind an unbound challenge to the session that first opens it", async () => {
+  const mockClient = createMockSupabaseClient()
+
+  mockClient.mockResponse('passkey_challenges', {
+    data: {
+      ...mockChallenge,
+      type: 'authentication',
+      session_id: null,
+      expires_at: new Date(Date.now() + 60000).toISOString()
+    },
+    error: null
+  }, 'select')
+
+  mockClient.mockResponse('passkey_challenges', {
+    data: [{ id: 'challenge-789', session_id: 'session-123' }],
+    error: null
+  }, 'update')
+
+  mockClient.mockResponse('user_passkeys', {
+    data: mockPasskey,
+    error: null
+  }, 'select')
+
+  const result = await generateMobileAuthenticationPage(
+    mockClient as unknown as SupabaseClient,
+    'mock-challenge-base64',
+    'test@example.com',
+    'session-123',
+    'credential-abc',
+    'api.risaboss.com'
+  )
+
+  assertEquals(result.success, true)
+
+  const update = mockClient.getQueryHistory().find(h => h.operation === 'update')
+  assertExists(update)
+  assertEquals((update.params.data as Record<string, unknown>).session_id, 'session-123')
+})
+
+Deno.test("generateMobileAuthenticationPage - a same-session reload never rewrites the binding", async () => {
+  const mockClient = createMockSupabaseClient()
+
+  mockClient.mockResponse('passkey_challenges', {
+    data: {
+      ...mockChallenge,
+      type: 'authentication',
+      session_id: 'session-123',
+      expires_at: new Date(Date.now() + 60000).toISOString()
+    },
+    error: null
+  }, 'select')
+
+  mockClient.mockResponse('user_passkeys', {
+    data: mockPasskey,
+    error: null
+  }, 'select')
+
+  const result = await generateMobileAuthenticationPage(
+    mockClient as unknown as SupabaseClient,
+    'mock-challenge-base64',
+    'test@example.com',
+    'session-123',
+    'credential-abc',
+    'api.risaboss.com'
+  )
+
+  assertEquals(result.success, true)
+
+  const update = mockClient.getQueryHistory().find(h => h.operation === 'update')
+  assertExists(update)
+  assertEquals('session_id' in (update.params.data as Record<string, unknown>), false)
+})
+
 Deno.test("GET /register/mobile - a request-supplied rpName cannot spoof the relying party name", async () => {
   const mockClient = createMockSupabaseClient()
 
   mockClient.mockResponse('passkey_challenges', {
     data: {
       ...mockChallenge,
+      session_id: 'session-123',
       type: 'registration',
       expires_at: new Date(Date.now() + 60000).toISOString()
     },
