@@ -8,6 +8,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Assumptions.assumeTrue
@@ -472,8 +473,12 @@ class RunConfigurationConcurrencyTest {
 
         val permissionChanged = tempDir.setWritable(false)
         try {
+            val probe =
+                runCatching {
+                    File.createTempFile("permission-probe-", ".tmp", tempDir).also { it.delete() }
+                }
             assumeTrue(
-                permissionChanged && !Files.isWritable(tempDir.toPath()),
+                permissionChanged && probe.isFailure,
                 "This environment does not enforce the unwritable-directory failure injection",
             )
             // Persistence failures are logged and swallowed (best-effort persistence): the
@@ -549,6 +554,7 @@ class RunConfigurationConcurrencyTest {
 
             val rounds = 40
             val start = CompletableDeferred<Unit>()
+            val readerReady = CompletableDeferred<Unit>()
             val writersFinished = CompletableDeferred<Unit>()
 
             // The updater mutates while the saver re-persists the current snapshot, so saves
@@ -559,6 +565,7 @@ class RunConfigurationConcurrencyTest {
             val updater =
                 async {
                     start.await()
+                    readerReady.await()
                     repeat(rounds) { index ->
                         RunConfigurationManager.updateConfiguration(configA.copy(command = "a-${index + 1}"))
                         RunConfigurationManager.updateConfiguration(configB.copy(command = "b-${index + 1}"))
@@ -567,6 +574,7 @@ class RunConfigurationConcurrencyTest {
             val saver =
                 async {
                     start.await()
+                    readerReady.await()
                     repeat(rounds) {
                         RunConfigurationManager.saveSettings()
                     }
@@ -577,9 +585,12 @@ class RunConfigurationConcurrencyTest {
                     var reads = 0
                     var torn = 0
                     var lastTornSample: String? = null
-                    while (!writersFinished.isCompleted) {
+                    readerReady.complete(Unit)
+                    while (isActive && !writersFinished.isCompleted) {
                         if (tempFile.exists()) {
-                            val text = tempFile.readText()
+                            // NIO shares the handle for deletion on Windows, so this observer
+                            // does not itself block the atomic replace it is testing.
+                            val text = Files.readString(tempFile.toPath())
                             if (text.isNotEmpty()) {
                                 val decoded = runCatching { json.decodeFromString<RunConfigurationSettings>(text) }
                                 if (decoded.isFailure) {
