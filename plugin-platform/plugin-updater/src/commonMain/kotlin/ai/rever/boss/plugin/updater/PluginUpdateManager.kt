@@ -75,6 +75,9 @@ interface UpdateListener {
  * - Rollback on failure
  * - Periodic background checks
  */
+// Distinct host-awareness gates (IPC/boss/api compatibility floors, downloaded-jar identity
+// vet), each with its own lifecycle and wiring point; no natural grouping.
+@Suppress("LongParameterList")
 class PluginUpdateManager(
     private val repositoryManager: PluginRepositoryManager,
     private val config: UpdateCheckerConfig = UpdateCheckerConfig(),
@@ -114,6 +117,24 @@ class PluginUpdateManager(
      * keeps the fail-open answer it has always had.
      */
     private val hostApiVersion: () -> String? = { "" },
+    /**
+     * Host-supplied identity vet for a downloaded update jar (BossConsole#927).
+     *
+     * Called between the download and the swap, with the id of the plugin being updated
+     * and the path of the jar the store served for it. Nothing binds a store row to the
+     * plugin id its jar declares - the store signature anchor covers the row's bytes, not
+     * the manifest inside them - and the swap force-unloads the running plugin BEFORE the
+     * new jar's manifest is ever read. A jar declaring a different id would then register
+     * whatever its own manifest says: a normal id leaves the updated plugin uninstalled
+     * for the session (ALREADY_LOADED makes the rollback a no-op), and an api-id jar
+     * reaches DynamicPluginManager.hotSwapApiLayer - a process-wide unload/swap/reload.
+     *
+     * A failed result rejects the jar while the original plugin is still installed: fail
+     * closed, no partial uninstall. Null (manager constructed without host awareness,
+     * dev builds) keeps this manager's pre-existing behaviour, exactly like
+     * [isIpcCompatible] and [hostBossVersion].
+     */
+    private val verifyDownloadedJar: ((pluginId: String, downloadedJarPath: String) -> Result<Unit>)? = null,
 ) {
     private val logger = BossLogger.forComponent("PluginUpdateManager")
 
@@ -483,6 +504,21 @@ class PluginUpdateManager(
         }
 
         val downloadedPath = downloadResult.getOrThrow()
+
+        // Download-verify boundary (BossConsole#927): vet the jar's declared identity
+        // BEFORE the swap unloads anything, so a mismatched jar is refused while the
+        // running plugin is still installed. This is also the last point at which
+        // nothing destructive has begun - the Installing state below is where callers
+        // withdraw their Cancel.
+        verifyDownloadedJar?.let { vet ->
+            val vetted = vet(pluginId, downloadedPath)
+            if (vetted.isFailure) {
+                val error = vetted.exceptionOrNull()?.message ?: "Downloaded update rejected"
+                _state.value = UpdateState.Failed(pluginId, error, vetted.exceptionOrNull())
+                listeners.forEach { it.onUpdateFailed(pluginId, error) }
+                return Result.failure(vetted.exceptionOrNull() ?: Exception(error))
+            }
+        }
 
         // Install
         _state.value = UpdateState.Installing(pluginId)
