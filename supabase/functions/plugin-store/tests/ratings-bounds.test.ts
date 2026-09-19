@@ -80,12 +80,12 @@ Deno.test("an oversized pageSize is rejected with a fixed 400 envelope, without 
   )
   assertEquals(response.status, 400)
   assertEquals(await response.json(), {
-    error: "page must be an integer from 1 to 100000 and pageSize an integer from 1 to 100",
+    error: "page must be an integer from 1 to 500 and pageSize an integer from 1 to 50",
   })
 })
 
-Deno.test("zero, negative, fractional and non-numeric pageSize are rejected, not turned into range math", async () => {
-  for (const pageSize of ["0", "-1", "1.5", "abc", ""]) {
+Deno.test("zero, negative, fractional, non-numeric and beyond-cap pageSize are rejected, not turned into range math", async () => {
+  for (const pageSize of ["0", "-1", "1.5", "abc", "", "51"]) {
     const response = await app(untouchableSupabase()).request(
       `/some-plugin/ratings?page=1&pageSize=${encodeURIComponent(pageSize)}`,
     )
@@ -94,7 +94,7 @@ Deno.test("zero, negative, fractional and non-numeric pageSize are rejected, not
 })
 
 Deno.test("zero, negative, fractional, non-numeric and beyond-cap page values are rejected", async () => {
-  for (const page of ["0", "-5", "1.5", "not-a-number", "100001", "1000000000"]) {
+  for (const page of ["0", "-5", "1.5", "not-a-number", "501", "1000000000"]) {
     const response = await app(untouchableSupabase()).request(
       `/some-plugin/ratings?page=${encodeURIComponent(page)}&pageSize=20`,
     )
@@ -108,7 +108,7 @@ Deno.test("the maximum allowed page and pageSize pass validation and reach the p
   const client = {
     rpc: () => Promise.resolve({ data: [], error: null }),
   } as unknown as SupabaseClient
-  const response = await app(client).request("/some-plugin/ratings?page=100000&pageSize=100")
+  const response = await app(client).request("/some-plugin/ratings?page=500&pageSize=50")
   assertEquals(response.status, 404)
 })
 
@@ -156,9 +156,9 @@ Deno.test("an unauthenticated caller cannot scrape rater UUIDs from the response
   assertEquals(raw.includes("userId"), false)
 })
 
-Deno.test("the range ceiling at max pageSize is exactly 100 rows", async () => {
+Deno.test("the range ceiling at max pageSize is exactly 50 rows", async () => {
   const { client, range } = ratingsSupabase([])
-  const response = await app(client).request("/some-plugin/ratings?page=2&pageSize=100")
+  const response = await app(client).request("/some-plugin/ratings?page=2&pageSize=50")
   assertEquals(response.status, 200)
-  assertEquals(range(), [100, 199])
+  assertEquals(range(), [50, 99])
 })
