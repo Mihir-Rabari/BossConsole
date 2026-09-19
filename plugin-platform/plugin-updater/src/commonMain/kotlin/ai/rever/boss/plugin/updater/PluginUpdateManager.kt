@@ -130,11 +130,17 @@ class PluginUpdateManager(
      * reaches DynamicPluginManager.hotSwapApiLayer - a process-wide unload/swap/reload.
      *
      * A failed result rejects the jar while the original plugin is still installed: fail
-     * closed, no partial uninstall. Null (manager constructed without host awareness,
-     * dev builds) keeps this manager's pre-existing behaviour, exactly like
-     * [isIpcCompatible] and [hostBossVersion].
+     * closed, no partial uninstall.
+     *
+     * REQUIRED, with no default - deliberately unlike [isIpcCompatible], [hostBossVersion]
+     * and [hostApiVersion], whose defaults keep a manager constructed without host
+     * awareness failing open the way it always has. A silently absent identity vet is a
+     * different class of hazard: an absent floor gate still leaves the loader's own
+     * version checks as a backstop, while an absent identity gate leaves the swap
+     * unvetted entirely. A construction site that forgets the vet must break the build,
+     * not ship without the gate.
      */
-    private val verifyDownloadedJar: ((pluginId: String, downloadedJarPath: String) -> Result<Unit>)? = null,
+    private val verifyDownloadedJar: (pluginId: String, downloadedJarPath: String) -> Result<Unit>,
 ) {
     private val logger = BossLogger.forComponent("PluginUpdateManager")
 
@@ -510,14 +516,12 @@ class PluginUpdateManager(
         // running plugin is still installed. This is also the last point at which
         // nothing destructive has begun - the Installing state below is where callers
         // withdraw their Cancel.
-        verifyDownloadedJar?.let { vet ->
-            val vetted = vet(pluginId, downloadedPath)
-            if (vetted.isFailure) {
-                val error = vetted.exceptionOrNull()?.message ?: "Downloaded update rejected"
-                _state.value = UpdateState.Failed(pluginId, error, vetted.exceptionOrNull())
-                listeners.forEach { it.onUpdateFailed(pluginId, error) }
-                return Result.failure(vetted.exceptionOrNull() ?: Exception(error))
-            }
+        val vetted = verifyDownloadedJar(pluginId, downloadedPath)
+        if (vetted.isFailure) {
+            val error = vetted.exceptionOrNull()?.message ?: "Downloaded update rejected"
+            _state.value = UpdateState.Failed(pluginId, error, vetted.exceptionOrNull())
+            listeners.forEach { it.onUpdateFailed(pluginId, error) }
+            return Result.failure(vetted.exceptionOrNull() ?: Exception(error))
         }
 
         // Install

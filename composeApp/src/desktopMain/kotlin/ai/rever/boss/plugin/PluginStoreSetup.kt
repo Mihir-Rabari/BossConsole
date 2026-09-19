@@ -313,7 +313,10 @@ object PluginStoreSetup {
                     // force-unloads the running plugin (BossConsole#927): the store
                     // row's bytes are anchored, the manifest inside them is not, so a
                     // mismatched jar must not uninstall - or become - the plugin the
-                    // user chose to update.
+                    // user chose to update. The vet enforces the store installers' two
+                    // conditions (the row's id, and nothing protected) and discards a
+                    // refused jar with its `.sig` sidecar itself, so the gate does not
+                    // lean on this call site's failure path to clean the bytes up.
                     verifyDownloadedJar = UpdateJarIdentityVet::vet,
                 )
 
