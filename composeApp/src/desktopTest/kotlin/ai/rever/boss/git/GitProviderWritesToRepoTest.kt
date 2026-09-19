@@ -331,6 +331,41 @@ class GitProviderWritesToRepoTest {
     }
 
     @Test
+    fun aRemoteStyleNameWhoseStrippedSegmentIsSafeStillChecksOutAndKeepsUncommittedWork(
+        @TempDir tmp: File,
+    ) = runTest {
+        val dir = repo(tmp)
+        // The safe-name control for the flag-shaped refusal above: same dirty tree, same
+        // remote-style name, but a stripped segment `isSafeRefName` lets through. The
+        // checkout must still DWIM to the tracking branch and CARRY the uncommitted
+        // modification - proving the gate refuses flag-shaped names only, not slashed
+        // names wholesale.
+        val cloneDir = File(tmp, "clone").apply { mkdirs() }
+        git(dir, "branch", "side")
+        git(cloneDir.parentFile, "clone", "-q", dir.absolutePath, cloneDir.absolutePath)
+        git(cloneDir, "config", "user.email", "t@example.com")
+        git(cloneDir, "config", "user.name", "Test")
+        // Same LF pin as repo(): the content assertion below must not see a CRLF rewrite.
+        git(cloneDir, "config", "core.autocrlf", "false")
+        File(cloneDir, "tracked.txt").writeText("dirty\n")
+        val headBefore = git(cloneDir, "rev-parse", "--abbrev-ref", "HEAD").trim()
+
+        val result = provider(cloneDir).checkout("origin/side")
+
+        assertTrue(result is GitOperationResultData.Success, "checkout refused origin/side: $result")
+        assertEquals(
+            "dirty\n",
+            File(cloneDir, "tracked.txt").readText(),
+            "a safe slashed name must carry the uncommitted work, not discard it",
+        )
+        assertEquals(
+            "side",
+            git(cloneDir, "rev-parse", "--abbrev-ref", "HEAD").trim(),
+            "the tracking branch must be checked out (was on $headBefore)",
+        )
+    }
+
+    @Test
     fun aNameThatStripsToNothingIsRefusedRatherThanHandedToGitAsAnEmptyArg(
         @TempDir tmp: File,
     ) = runTest {
