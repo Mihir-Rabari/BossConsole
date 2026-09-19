@@ -26,7 +26,7 @@ class PluginUpdateManagerIdentityVetTest {
             version = "2.0.0",
         )
 
-    private fun manager(vet: ((String, String) -> Result<Unit>)?): PluginUpdateManager {
+    private fun manager(vet: (String, String) -> Result<Unit>): PluginUpdateManager {
         val repos = PluginRepositoryManager().apply { addRepository(FakeSingleVersionRepository(candidate())) }
         return PluginUpdateManager(
             repositoryManager = repos,
