@@ -162,13 +162,15 @@ fun ProjectCard(
 /**
  * Format timestamp as relative time (e.g., "2h ago", "Yesterday").
  *
- * Day-named buckets follow the calendar in [zone], not the elapsed clock:
- * "Yesterday" is the previous calendar date of [timestamp] - never a 24-48h
- * elapsed window - so a 23:59 mtime still reads Yesterday at 00:01 tonight,
- * while a 23:00 mtime from two nights back never does. The elapsed buckets
- * ("Just now", "Nm ago", "Nh ago") apply only within the timestamp's own
- * calendar date; anything older than yesterday falls back to the absolute
- * "MMM d" date.
+ * Sub-day elapsed buckets are pure clock math: "Just now", "Nm ago" and the
+ * "Nh ago" rendered below 24h depend only on the elapsed clock, so a 23:50
+ * mtime still reads "15m ago" at 00:05 tonight. The calendar gates only the
+ * day-named labels: "Yesterday" is the previous calendar date of [timestamp]
+ * in [zone] - never a 24-48h elapsed window - so a 23:00 mtime from two
+ * nights back never reads Yesterday. The same-date hour bucket is left
+ * uncapped, so a DST-stretched calendar date stays "Nh ago" past 24 real
+ * hours; anything older than yesterday falls back to the absolute "MMM d"
+ * date.
  *
  * [now] and [zone] default to the system clock and zone; tests inject fixed
  * values to pin day boundaries deterministically.
@@ -187,12 +189,17 @@ internal fun formatRelativeTime(
         // in a separate issue and deliberately untouched here.
         diff < 0 -> "Just now"
 
-        dayDiff == 0L && diff < 60_000 -> "Just now"
+        // Sub-day elapsed buckets are pure clock math - midnight does not
+        // promote a 2-minute-old mtime to Yesterday.
+        diff < 60_000 -> "Just now"
 
-        dayDiff == 0L && diff < 3600_000 -> "${diff / 60_000}m ago"
+        diff < 3600_000 -> "${diff / 60_000}m ago"
 
-        dayDiff == 0L -> "${diff / 3600_000}h ago"
+        // Same calendar date keeps the hour bucket even past 24h of real
+        // time, so a DST-stretched date never falls out of "Nh ago".
+        diff < 86_400_000 || dayDiff == 0L -> "${diff / 3600_000}h ago"
 
+        // Only the day-named label resolves against calendar days.
         dayDiff == 1L -> "Yesterday"
 
         else -> SimpleDateFormat("MMM d").format(Date(timestamp))
