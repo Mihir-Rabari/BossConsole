@@ -39,6 +39,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.text.SimpleDateFormat
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
 import java.util.Date
 
 /**
@@ -158,18 +161,56 @@ fun ProjectCard(
 
 /**
  * Format timestamp as relative time (e.g., "2h ago", "Yesterday").
+ *
+ * Day-named buckets follow the calendar in [zone], not the elapsed clock:
+ * "Yesterday" is the previous calendar date of [timestamp] - never a 24-48h
+ * elapsed window - so a 23:59 mtime still reads Yesterday at 00:01 tonight,
+ * while a 23:00 mtime from two nights back never does. The elapsed buckets
+ * ("Just now", "Nm ago", "Nh ago") apply only within the timestamp's own
+ * calendar date; anything older than yesterday falls back to the absolute
+ * "MMM d" date.
+ *
+ * [now] and [zone] default to the system clock and zone; tests inject fixed
+ * values to pin day boundaries deterministically.
  */
-private fun formatRelativeTime(timestamp: Long): String {
+internal fun formatRelativeTime(
+    timestamp: Long,
+    now: Long = System.currentTimeMillis(),
+    zone: ZoneId = ZoneId.systemDefault(),
+): String {
     if (timestamp == 0L) return "Never"
 
-    val now = System.currentTimeMillis()
     val diff = now - timestamp
-
+    val dayDiff = calendarDayDiff(now, timestamp, zone)
     return when {
-        diff < 60_000 -> "Just now"
-        diff < 3600_000 -> "${diff / 60_000}m ago"
-        diff < 86400_000 -> "${diff / 3600_000}h ago"
-        diff < 172800_000 -> "Yesterday"
+        // Future mtimes keep rendering Just now; their handling is tracked
+        // in a separate issue and deliberately untouched here.
+        diff < 0 -> "Just now"
+
+        dayDiff == 0L && diff < 60_000 -> "Just now"
+
+        dayDiff == 0L && diff < 3600_000 -> "${diff / 60_000}m ago"
+
+        dayDiff == 0L -> "${diff / 3600_000}h ago"
+
+        dayDiff == 1L -> "Yesterday"
+
         else -> SimpleDateFormat("MMM d").format(Date(timestamp))
     }
+}
+
+/**
+ * Calendar days from the timestamp date to the now date in [zone]. Future
+ * mtimes get a sentinel gap instead of date math, so they keep their
+ * existing rendering no matter how far out they are.
+ */
+private fun calendarDayDiff(
+    now: Long,
+    timestamp: Long,
+    zone: ZoneId,
+): Long {
+    if (now - timestamp < 0) return -1L
+    val today = LocalDate.ofInstant(Instant.ofEpochMilli(now), zone).toEpochDay()
+    val day = LocalDate.ofInstant(Instant.ofEpochMilli(timestamp), zone).toEpochDay()
+    return today - day
 }
