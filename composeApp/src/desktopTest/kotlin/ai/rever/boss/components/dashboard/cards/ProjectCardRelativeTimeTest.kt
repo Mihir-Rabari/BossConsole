@@ -13,10 +13,12 @@ import java.util.Date
 /**
  * Day-boundary matrix for [formatRelativeTime].
  *
- * The day-named buckets are calendar semantics: "Yesterday" is the previous
- * calendar date in the active zone - never a 24-48h elapsed window - and the
- * elapsed buckets ("Just now", "Nm ago", "Nh ago") only apply within the
- * timestamp's own calendar date.
+ * Sub-day elapsed buckets stay pure: "Just now", "Nm ago" and the sub-24h
+ * "Nh ago" depend only on elapsed time, so a 23:50 save read at 00:05 is
+ * "15m ago", not "Yesterday". The calendar owns only the day-named labels:
+ * "Yesterday" is the previous calendar date in the active zone - never a
+ * 24-48h elapsed window - and the same-date hour bucket stays uncapped so a
+ * DST-stretched calendar date never falls out of "Nh ago".
  *
  * Every case pins a fixed zone and fixed instants, so nothing here races the
  * wall clock or the machine timezone. Asia/Kolkata (fixed +05:30, no DST)
@@ -73,18 +75,20 @@ class ProjectCardRelativeTimeTest {
     }
 
     @Test
-    fun `two minutes across midnight read Yesterday, not Just now`() {
-        // 23:59 last night vs 00:01 tonight: elapsed says 2m ago, the
-        // calendar says Yesterday.
-        assertEquals("Yesterday", between(kolkata, "2026-09-18", "23:59", "2026-09-19", "00:01"))
-        // The boundary into Just now is calendar-owned too: 50 elapsed
-        // seconds still read Yesterday once midnight has been crossed.
-        assertEquals("Yesterday", between(kolkata, "2026-09-18", "23:59:10", "2026-09-19", "00:00"))
+    fun `two minutes across midnight stay 2m ago, not Yesterday`() {
+        // Issue-thread correction (retracted Case 2): elapsed wins below a
+        // day, so 23:59 last night vs 00:01 tonight is 2m ago.
+        assertEquals("2m ago", between(kolkata, "2026-09-18", "23:59", "2026-09-19", "00:01"))
+        // The sub-minute boundary is elapsed-owned too: 50 seconds across
+        // midnight still reads Just now.
+        assertEquals("Just now", between(kolkata, "2026-09-18", "23:59:10", "2026-09-19", "00:00"))
+        // The author's exact retracted case: saved 23:50, viewed 00:05.
+        assertEquals("15m ago", between(kolkata, "2026-09-18", "23:50", "2026-09-19", "00:05"))
     }
 
     @Test
-    fun `an hour gap that crosses midnight reads Yesterday, not Nh ago`() {
-        assertEquals("Yesterday", between(kolkata, "2026-09-18", "23:00", "2026-09-19", "01:00"))
+    fun `a two-hour gap across midnight reads 2h ago, not Yesterday`() {
+        assertEquals("2h ago", between(kolkata, "2026-09-18", "23:00", "2026-09-19", "01:00"))
     }
 
     @Test
