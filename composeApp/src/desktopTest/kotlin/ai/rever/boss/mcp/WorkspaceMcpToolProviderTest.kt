@@ -8,6 +8,7 @@ import ai.rever.boss.components.workspaces.LayoutWorkspace
 import ai.rever.boss.components.workspaces.PredefinedWorkspaces
 import ai.rever.boss.components.workspaces.WorkspaceFileManager
 import ai.rever.boss.components.workspaces.WorkspaceFileManagerCommon
+import ai.rever.boss.components.workspaces.WorkspaceManager
 import ai.rever.boss.components.workspaces.WorkspaceSerializer
 import ai.rever.boss.components.workspaces.extractCurrentWorkspace
 import ai.rever.boss.components.workspaces.workspaceManager
@@ -24,9 +25,11 @@ import ai.rever.boss.plugin.workspace.TabConfig
 import androidx.compose.runtime.Composable
 import com.arkivanov.decompose.ComponentContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
@@ -48,6 +51,9 @@ import kotlin.test.assertTrue
 class WorkspaceMcpToolProviderTest {
     private val tempDirs = mutableListOf<File>()
     private val createdSplitViewStates = mutableListOf<SplitViewState>()
+
+    /** Ids registered into the process-wide [workspaceManager] singleton, for tearDown. */
+    private val registeredManagerIds = mutableListOf<String>()
     private var windowCreatorCalls = 0
     private lateinit var workspaceDir: File
     private lateinit var fileManager: WorkspaceFileManager
@@ -83,6 +89,8 @@ class WorkspaceMcpToolProviderTest {
         WorkspaceMcpToolProvider.splitViewStateResolver = null
         WorkspaceMcpToolProvider.terminalTabOpener = null
         WorkspaceMcpToolProvider.splitViewWaitTimeoutMs = 5000L
+        registeredManagerIds.forEach { unregisterFromManager(it) }
+        registeredManagerIds.clear()
         SplitViewStateRegistry.getAllStates().keys.forEach {
             SplitViewStateRegistry.unregister(it)
         }
@@ -90,6 +98,22 @@ class WorkspaceMcpToolProviderTest {
         createdSplitViewStates.clear()
         tempDirs.forEach { it.deleteRecursively() }
         tempDirs.clear()
+    }
+
+    /**
+     * Drop [workspaceId] from the singleton's picker list, so later test classes in this
+     * JVM inherit no fixture they never registered. [WorkspaceManager] has no unregister
+     * door: `deleteWorkspaceById` removes a row only when its own file manager deleted the
+     * Space's FILE, and a test registers through `registerWorkspace` precisely because the
+     * file lives where the singleton's file manager cannot see it. Reach the backing flow
+     * directly, the same way other desktop tests reset otherwise-final private state.
+     */
+    private fun unregisterFromManager(workspaceId: String) {
+        val listField = WorkspaceManager::class.java.getDeclaredField("_workspaces")
+        listField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val workspaces = listField.get(workspaceManager) as MutableStateFlow<List<LayoutWorkspace>>
+        workspaces.value = workspaces.value.filterNot { it.id == workspaceId }
     }
 
     private fun createTestCore(): McpToolRegistryCore {
@@ -905,7 +929,15 @@ class WorkspaceMcpToolProviderTest {
                         ),
                     projectPath = projectPath,
                 )
+            // The manager singleton loads its list asynchronously once per process, and that
+            // first load REPLACES the whole list - a registration landing before it completes
+            // is swapped out (the Windows CI flake: matchExistingSpace then saw nothing for
+            // the project path and minted a fresh Space). The shipped layouts keep the loaded
+            // list non-empty, so awaiting its first non-empty value means the load has landed
+            // and the registration cannot be replaced underneath it.
+            withTimeout(5_000L) { workspaceManager.workspaces.first { it.isNotEmpty() } }
             workspaceManager.registerWorkspace(hostile)
+            registeredManagerIds.add(hostile.id)
             fileManager.saveWorkspace(hostile)
 
             val core = createTestCore()
@@ -946,7 +978,11 @@ class WorkspaceMcpToolProviderTest {
             // A Space the operator saved for this project, terminal and all, but with no
             // startup command: the restore path the gate must leave alone.
             val benign = savedSpaceFixture("workspace-path-benign", projectPath)
+            // Same one-shot load race as the refusal test above: the first load replaces the
+            // whole list, so register only after it has landed.
+            withTimeout(5_000L) { workspaceManager.workspaces.first { it.isNotEmpty() } }
             workspaceManager.registerWorkspace(benign)
+            registeredManagerIds.add(benign.id)
 
             val result =
                 createTestCore().invoke(
