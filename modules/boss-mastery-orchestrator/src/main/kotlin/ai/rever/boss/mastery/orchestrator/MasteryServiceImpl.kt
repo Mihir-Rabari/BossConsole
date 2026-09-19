@@ -19,6 +19,7 @@ import ai.rever.boss.ipc.proto.NodeFailed
 import ai.rever.boss.ipc.proto.NodeSkipped
 import ai.rever.boss.ipc.proto.NodeStarted
 import ai.rever.boss.mastery.MasteryExecutor
+import ai.rever.boss.mastery.TopologicalSort
 import io.grpc.Status
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -412,6 +413,61 @@ private fun validateDefinition(request: PMasteryDef) {
             "them, so a conditioned edge would run its target node unconditionally. " +
             "Remove the condition or split the workflow (#1060)"
     }
+    validateDagStructure(request)
+}
+
+/**
+ * Rejects structurally invalid DAGs: blank, reserved ("INPUT") or duplicate node ids,
+ * unknown edge endpoints, and cycles.
+ */
+private fun validateDagStructure(request: PMasteryDef) {
+    val nodeIds = request.nodesList.map { it.id }
+    validateArgument(nodeIds.all { it.isNotBlank() }) { "Mastery node ids must not be blank" }
+    validateArgument(nodeIds.none { it == "INPUT" }) {
+        "Mastery node id \"INPUT\" is reserved for the mastery input and cannot be used"
+    }
+    val duplicateIds =
+        nodeIds
+            .groupingBy { it }
+            .eachCount()
+            .filterValues { it > 1 }
+            .keys
+    validateArgument(duplicateIds.isEmpty()) {
+        "Duplicate mastery node ids: ${duplicateIds.joinToString()}"
+    }
+    val unknownSources =
+        request.edgesList
+            .map { it.fromNode }
+            .filter { it != "INPUT" && it !in nodeIds }
+            .distinct()
+    validateArgument(unknownSources.isEmpty()) {
+        "Mastery edges reference unknown source node ids: ${unknownSources.joinToString()}"
+    }
+    val unknownTargets =
+        request.edgesList
+            .map { it.toNode }
+            .filter { it !in nodeIds }
+            .distinct()
+    validateArgument(unknownTargets.isEmpty()) {
+        "Mastery edges reference unknown target node ids: ${unknownTargets.joinToString()}"
+    }
+    val dagError: String? =
+        try {
+            TopologicalSort.sort(
+                nodes = request.nodesList,
+                getId = { it.id },
+                getDeps = { node ->
+                    request.edgesList
+                        .filter { it.toNode == node.id }
+                        .map { it.fromNode }
+                        .filter { it != "INPUT" }
+                },
+            )
+            null
+        } catch (e: IllegalArgumentException) {
+            e.message ?: "Mastery definition contains a cycle"
+        }
+    validateArgument(dagError == null) { "Mastery definition is not a valid DAG: $dagError" }
 }
 
 private fun masteryLimit(message: String) = Status.RESOURCE_EXHAUSTED.withDescription(message).asRuntimeException()
