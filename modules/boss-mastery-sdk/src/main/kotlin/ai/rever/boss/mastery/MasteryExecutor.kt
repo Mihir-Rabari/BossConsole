@@ -51,7 +51,7 @@ class MasteryExecutor(
                 return@channelFlow
             }
             val startTime = System.currentTimeMillis()
-            send(MasteryProgress.Started(mastery.id, mastery.nodes.size))
+            send(MasteryProgress.Started(mastery.id, mastery.name, mastery.nodes.size))
 
             // Accumulates node outputs; "INPUT" is the virtual source node
             val nodeOutputs = mutableMapOf<String, Map<String, String>>("INPUT" to input)
@@ -82,9 +82,21 @@ class MasteryExecutor(
                 }
 
                 val finalOutput = collectFinalOutput(mastery, nodeOutputs)
-                send(MasteryProgress.Completed(finalOutput, System.currentTimeMillis() - startTime))
+                send(
+                    MasteryProgress.Completed(
+                        finalOutput,
+                        System.currentTimeMillis() - startTime,
+                        nodeOutputs.size - 1,
+                    ),
+                )
             } catch (e: NodeExecutionException) {
-                send(MasteryProgress.Failed(e.message ?: "Node execution failed", e.nodeId))
+                send(
+                    MasteryProgress.Failed(
+                        e.message ?: "Node execution failed",
+                        e.nodeId,
+                        System.currentTimeMillis() - startTime,
+                    ),
+                )
             }
         }
 
@@ -179,6 +191,8 @@ class MasteryExecutor(
             MasteryProgress.NodeStarted(
                 node.id,
                 node.displayName.ifEmpty { "${node.pluginId}/${node.action}" },
+                node.pluginId,
+                node.action,
             ),
         )
 
@@ -209,7 +223,14 @@ class MasteryExecutor(
             } catch (e: Exception) {
                 lastError = e.message?.take(2048)
                 val willRetry = attempt < node.maxRetries
-                emit(MasteryProgress.NodeFailed(node.id, e.message?.take(2048) ?: "Unknown error", willRetry))
+                emit(
+                    MasteryProgress.NodeFailed(
+                        node.id,
+                        e.message?.take(2048) ?: "Unknown error",
+                        willRetry,
+                        attempt + 1,
+                    ),
+                )
                 logger.warn(
                     "Node {} attempt {}/{} failed: {}",
                     node.id,
@@ -321,12 +342,15 @@ class MasteryExecutor(
 sealed class MasteryProgress {
     data class Started(
         val masteryId: String,
+        val masteryName: String,
         val totalNodes: Int,
     ) : MasteryProgress()
 
     data class NodeStarted(
         val nodeId: String,
         val displayName: String,
+        val pluginId: String,
+        val action: String,
     ) : MasteryProgress()
 
     data class NodeCompleted(
@@ -339,6 +363,8 @@ sealed class MasteryProgress {
         val nodeId: String,
         val error: String,
         val willRetry: Boolean,
+        /** 1-based ordinal of the failed attempt, so clients can report retry 2 of 5. */
+        val retryAttempt: Int,
     ) : MasteryProgress()
 
     data class NodeSkipped(
@@ -349,10 +375,12 @@ sealed class MasteryProgress {
     data class Completed(
         val output: Map<String, String>,
         val totalDurationMs: Long,
+        val nodesExecuted: Int,
     ) : MasteryProgress()
 
     data class Failed(
         val error: String,
         val failedNodeId: String,
+        val totalDurationMs: Long,
     ) : MasteryProgress()
 }
