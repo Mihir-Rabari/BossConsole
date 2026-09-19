@@ -278,13 +278,14 @@ rating.openapi(deleteRatingRoute, async (ctx) => {
 // GET /:pluginId/ratings - Get all ratings for a plugin
 // ============================================================================
 
-// Mirrors the /search route's cap (SearchPluginsRequestSchema.pageSize): without it a single
-// request asks PostgREST for an arbitrarily large range on a public, rate-limit-free route.
-const RATINGS_PAGE_SIZE_MAX = 100
+// Matches the family bound #1045 pins on /list (and /search already caps): page 1..500 with
+// pageSize 1..50 keeps the worst-case single request a 25,000-row window on a public,
+// rate-limit-free route, instead of asking PostgREST for an arbitrarily large range.
+const RATINGS_PAGE_SIZE_MAX = 50
 
 // A ratings page walks one plugin's own review list, so a page past this bound has no
 // legitimate use - capping it closes the deep-offset scan the pageSize cap alone does not.
-const RATINGS_PAGE_MAX = 100_000
+const RATINGS_PAGE_MAX = 500
 
 const getPluginRatingsRoute = createRoute({
   method: 'get',
