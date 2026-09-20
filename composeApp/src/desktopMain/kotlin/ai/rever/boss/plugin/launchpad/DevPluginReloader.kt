@@ -25,6 +25,13 @@ object DevPluginReloader {
     private val reloadLocks = ConcurrentHashMap<String, Mutex>()
     private val sessionPreservedPaths = ConcurrentHashMap<String, MutableSet<String>>()
 
+    /**
+     * Per-plugin cap on session-preserved staging paths; oldest paths are evicted once
+     * it is reached. Large enough to hold every candidate of the reload sequences that
+     * DevPluginRollbackTest pins, small enough to bound a long dev session's staging.
+     */
+    private const val MAX_SESSION_PRESERVED_PATHS = 10
+
     internal fun clearSessionPreservedPathsForTest() {
         sessionPreservedPaths.clear()
     }
@@ -284,14 +291,30 @@ object DevPluginReloader {
         }
     }
 
+    /**
+     * Records staging JAR paths to preserve for [pluginId] across the 3-version staging
+     * prune. Retention ACROSS reload attempts is deliberate and pinned by
+     * DevPluginRollbackTest: a failed reload's candidate JAR must outlive later successful
+     * reloads, and every JAR the session reloads stays exempt from the prune while the
+     * session runs. What was never deliberate is that this set grew without bound - one
+     * path per reload, pinning 0.2-6 GB of staging JARs until process exit (#1217).
+     *
+     * The set is now capped at [MAX_SESSION_PRESERVED_PATHS] per plugin and evicts the
+     * oldest-recorded paths first, so a long dev session bounds its staging footprint to
+     * the cap plus the 3-version window while recent reload history keeps its rollback
+     * safety. Mutated only under this plugin's reload mutex, so the insertion order that
+     * drives eviction is stable; [pruneStaging] reads it under the same mutex.
+     */
     private fun recordSessionPreservedPaths(
         pluginId: String,
         paths: Collection<String>,
     ) {
         if (paths.isEmpty()) return
-        sessionPreservedPaths
-            .computeIfAbsent(pluginId) { ConcurrentHashMap.newKeySet() }
-            .addAll(paths)
+        val recorded = sessionPreservedPaths.getOrPut(pluginId) { linkedSetOf() }
+        recorded.addAll(paths)
+        while (recorded.size > MAX_SESSION_PRESERVED_PATHS) {
+            recorded.remove(recorded.first())
+        }
     }
 
     private fun pruneStaging(
