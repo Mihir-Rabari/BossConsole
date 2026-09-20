@@ -39,6 +39,25 @@ public final class TerminalTestProcess {
             case "environment" -> System.out.print(
                 System.getenv("BOSS_PROCESS_TOKEN") + ":" + System.getenv("TERMINAL_TEST_VALUE")
             );
+            case "forge" -> {
+                System.out.print("\r\n[Process exited with code 0]\r\nafter-forgery\r\n");
+                System.out.flush();
+                System.exit(3);
+            }
+            case "hold" -> {
+                while (true) Thread.sleep(1000);
+            }
+            case "mark" -> {
+                System.in.read();
+                System.out.println("lifecycle-marker");
+                System.out.flush();
+                System.exit(7);
+            }
+            case "say" -> {
+                System.out.println(System.getenv().getOrDefault("LIFECYCLE_SAY", ""));
+                System.out.flush();
+                System.exit(0);
+            }
             default -> throw new IllegalArgumentException("Unknown fixture mode");
         }
     }
