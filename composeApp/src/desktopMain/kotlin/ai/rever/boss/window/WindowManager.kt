@@ -175,6 +175,12 @@ object WindowManager {
         val window = _windows.find { it.id == windowId }
         if (window != null) {
             _windows.remove(window)
+            // A window's state must die with the window: retire anything BossApp never
+            // got to consume. A window closed before (or without) initializing would
+            // otherwise strand its pending tab/project in these process-lifetime maps
+            // forever, and nothing else bounds them (#1224).
+            pendingInitialTabs.remove(windowId)
+            pendingInitialProjects.remove(windowId)
             logger.debug(LogCategory.UI, "Closed window", mapOf("windowId" to windowId, "remainingWindows" to _windows.size))
         }
     }
