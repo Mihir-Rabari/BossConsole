@@ -41,8 +41,9 @@ data class UpdateInfo(
     val downloadUrl: String? = null,
     val assetSize: Long = 0,
     val assetName: String = "",
-    // Optional integrity hash for the asset (populated by the Supabase source).
-    // When present, the download is verified against it before install.
+    // Integrity hash for the asset (the Supabase catalog carries it; GitHub
+    // releases do not). The download is verified against it before install, and a
+    // manifest without one is refused rather than staged unverified.
     val sha256: String? = null,
 ) {
     val isNewerVersionAvailable: Boolean

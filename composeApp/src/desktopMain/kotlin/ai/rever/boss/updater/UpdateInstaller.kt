@@ -468,6 +468,18 @@ object UpdateInstaller {
                 )
             }
 
+            // The install boundary re-verifies the artifact bytes against the
+            // checksum bound when the download passed the catalog check. The
+            // download-time verification and this elevated install can be minutes,
+            // days or an app restart apart, and nothing between them re-checked the
+            // staged file: an artifact swapped in the staging directory meanwhile -
+            // or one that was never checksum-verified at all, like a hashless
+            // manifest or a leftover from before the gate - went straight into
+            // msiexec/hdiutil/dpkg, or overwrote the running jar in place. Fail
+            // closed here, before a single installer command runs: a refusal
+            // leaves the previous installation untouched and runnable.
+            UpdateArtifactIntegrityVet.requireVerifiedChecksum(downloadFile)
+
             // Validate downloaded file type matches expected types for current platform
             // This prevents installing wrong package type (e.g., .msi on Linux)
             val fileName = downloadFile.name.lowercase()
