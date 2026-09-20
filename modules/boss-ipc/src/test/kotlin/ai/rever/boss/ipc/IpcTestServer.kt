@@ -13,10 +13,11 @@ import java.util.concurrent.TimeUnit
 /** Exercises the production authenticated transport with fresh endpoint keys and explicit callers. */
 class IpcTestServer(
     vararg services: BindableService,
+    limits: IpcTransportLimits = IpcTransportLimits(),
 ) : AutoCloseable {
     val registry = ProcessTokenRegistry()
     val identity = IpcTlsIdentity.create()
-    val server = BossIpcServer("tcp://127.0.0.1:0", registry, identity)
+    val server = BossIpcServer("tcp://127.0.0.1:0", registry, identity, limits)
     private val channels = mutableListOf<ManagedChannel>()
 
     init {
