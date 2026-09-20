@@ -1,5 +1,6 @@
 package ai.rever.boss.components.auth.screens
 
+import ai.rever.boss.components.auth.AuthDeepLinks
 import ai.rever.boss.components.bars.horizontal.HorizontalBar
 import ai.rever.boss.layout.BossChrome
 import ai.rever.boss.plugin.ui.BossTheme
@@ -46,12 +47,7 @@ fun PasskeyBrowserScreen(
     val deepLink by DeepLinkHandler.deepLinkFlow.collectAsState()
     LaunchedEffect(deepLink) {
         val link = deepLink
-        if (link != null && (
-                link.contains("auth/verify") ||
-                    link.contains("passkey/registered") ||
-                    link.contains("passkey/authenticated")
-            )
-        ) {
+        if (link != null && AuthDeepLinks.parse(link) != null) {
             passkeyBrowserLogger.info(LogCategory.AUTH, "Deep link received, operation successful")
 
             // Add small delay for visual feedback
