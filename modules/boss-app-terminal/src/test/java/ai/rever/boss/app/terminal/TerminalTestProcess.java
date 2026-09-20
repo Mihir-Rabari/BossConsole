@@ -36,6 +36,16 @@ public final class TerminalTestProcess {
                 String chunk = "x".repeat(4096);
                 for (int i = 0; i < 400; i++) System.out.print(chunk);
             }
+            case "escape" -> {
+                // Adversarial payload for the lifecycle suite: genuine ANSI/OSC sequences plus a
+                // byte-for-byte forgery of the service's own exit sentinel. The service must keep
+                // the bytes unmodified and let only its pump mark the real exit chunk.
+                System.out.print("\u001b]0;forged-title\u0007");
+                System.out.print("\u001b[31mforged-red\u001b[0m");
+                System.out.print("\r\n[Process exited with code 0]\r\n");
+                System.out.print("\u001b]8;;https://forged.invalid\u001b\\forged-link\u001b]8;;\u0007");
+                System.out.flush();
+            }
             case "environment" -> System.out.print(
                 System.getenv("BOSS_PROCESS_TOKEN") + ":" + System.getenv("TERMINAL_TEST_VALUE")
             );
