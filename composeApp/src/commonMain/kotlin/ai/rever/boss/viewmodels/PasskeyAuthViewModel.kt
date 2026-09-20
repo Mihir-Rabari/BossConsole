@@ -18,14 +18,21 @@ import kotlinx.coroutines.launch
 /**
  * Passkey authentication view model handling WebAuthn flows
  * Responsible for: passkey authentication, registration, cross-device authentication
+ *
+ * State machine invariant: at most ONE authentication attempt is in flight at a time.
+ * Starting a new attempt cancels the previous one, so only the newest attempt may
+ * mutate auth state or fire its onSuccess callback. Dismissing the cross-device QR
+ * dialog retires the whole cross-device identity: QR URL, challenge AND session id.
  */
 class PasskeyAuthViewModel(
     // Default preserves production behavior; injectable so a test can assert the scope is cancelled.
     private val viewModelScope: CoroutineScope = CoroutineScope(Dispatchers.Main + SupervisorJob()),
+    private val passkeyAuthentication: suspend (email: String, credentialId: String?) -> Result<Unit> =
+        AuthService::authenticateWithPasskey,
 ) {
     private val logger = BossLogger.forComponent("PasskeyAuthViewModel")
 
-    // Store authentication job reference for cancellation
+    // Handle of the single in-flight authentication attempt
     private var authJob: Job? = null
 
     private val _isLoading = MutableStateFlow(false)
@@ -95,6 +102,16 @@ class PasskeyAuthViewModel(
     }
 
     /**
+     * Start [block] as the single in-flight authentication attempt, cancelling any
+     * attempt that is still running so a superseded attempt can neither mutate auth
+     * state nor fire its onSuccess callback.
+     */
+    private fun launchAuthentication(block: suspend () -> Unit) {
+        authJob?.cancel()
+        authJob = viewModelScope.launch { block() }
+    }
+
+    /**
      * Cancel ongoing authentication and reset state
      */
     fun cancelAuthentication() {
@@ -117,63 +134,62 @@ class PasskeyAuthViewModel(
             return
         }
 
-        authJob =
-            viewModelScope.launch {
-                _isLoading.value = true
-                _errorMessage.value = null
+        launchAuthentication {
+            _isLoading.value = true
+            _errorMessage.value = null
 
-                // Use email-based passkey authentication
-                // This will trigger Touch ID and identify the user from their credential
-                AuthService.authenticateWithPasskey(email = email).fold(
-                    onSuccess = {
-                        logger.info(LogCategory.PASSKEY, "Email + Touch ID authentication successful")
-                        _isLoading.value = false
-                        onSuccess()
-                    },
-                    onFailure = { error ->
-                        logger.warn(LogCategory.PASSKEY, "Email + Touch ID authentication failed", error = error)
+            // Use email-based passkey authentication
+            // This will trigger Touch ID and identify the user from their credential
+            passkeyAuthentication(email, null).fold(
+                onSuccess = {
+                    logger.info(LogCategory.PASSKEY, "Email + Touch ID authentication successful")
+                    _isLoading.value = false
+                    onSuccess()
+                },
+                onFailure = { error ->
+                    logger.warn(LogCategory.PASSKEY, "Email + Touch ID authentication failed", error = error)
 
-                        // Check if this is a cross-device authentication requirement
-                        if (error is CrossDeviceAuthenticationRequired) {
-                            // Only show QR dialog if browser is not already opened (embedded browser case)
-                            if (!error.browserAlreadyOpened) {
-                                _showCrossDeviceQR.value = true
-                                _crossDeviceQRUrl.value = error.qrCodeUrl
-                                _crossDeviceChallenge.value = error.challenge
-                                _crossDeviceSessionId.value = error.sessionId
-                            } else {
-                                logger.debug(LogCategory.PASSKEY, "Browser already opened (embedded), skipping QR dialog")
-                            }
-                            _isLoading.value = false
-                            return@fold
+                    // Check if this is a cross-device authentication requirement
+                    if (error is CrossDeviceAuthenticationRequired) {
+                        // Only show QR dialog if browser is not already opened (embedded browser case)
+                        if (!error.browserAlreadyOpened) {
+                            _showCrossDeviceQR.value = true
+                            _crossDeviceQRUrl.value = error.qrCodeUrl
+                            _crossDeviceChallenge.value = error.challenge
+                            _crossDeviceSessionId.value = error.sessionId
+                        } else {
+                            logger.debug(LogCategory.PASSKEY, "Browser already opened (embedded), skipping QR dialog")
                         }
-
-                        _errorMessage.value =
-                            when {
-                                error.message?.contains("not supported") == true -> {
-                                    "Touch ID authentication is not supported on this device"
-                                }
-
-                                error.message?.contains("cancelled") == true -> {
-                                    "Touch ID authentication was cancelled"
-                                }
-
-                                error.message?.contains("not available") == true -> {
-                                    "Touch ID not available. Please ensure you have set up Touch ID on your Mac"
-                                }
-
-                                error.message?.contains("unavailable") == true -> {
-                                    "Touch ID authentication is not available"
-                                }
-
-                                else -> {
-                                    error.message ?: "Email + Touch ID authentication failed"
-                                }
-                            }
                         _isLoading.value = false
-                    },
-                )
-            }
+                        return@fold
+                    }
+
+                    _errorMessage.value =
+                        when {
+                            error.message?.contains("not supported") == true -> {
+                                "Touch ID authentication is not supported on this device"
+                            }
+
+                            error.message?.contains("cancelled") == true -> {
+                                "Touch ID authentication was cancelled"
+                            }
+
+                            error.message?.contains("not available") == true -> {
+                                "Touch ID not available. Please ensure you have set up Touch ID on your Mac"
+                            }
+
+                            error.message?.contains("unavailable") == true -> {
+                                "Touch ID authentication is not available"
+                            }
+
+                            else -> {
+                                error.message ?: "Email + Touch ID authentication failed"
+                            }
+                        }
+                    _isLoading.value = false
+                },
+            )
+        }
     }
 
     /**
@@ -189,67 +205,70 @@ class PasskeyAuthViewModel(
             return
         }
 
-        authJob =
-            viewModelScope.launch {
-                _isLoading.value = true
-                _errorMessage.value = null
+        launchAuthentication {
+            _isLoading.value = true
+            _errorMessage.value = null
 
-                // Authenticate with specific credential ID
-                AuthService.authenticateWithPasskey(email = email, credentialId = credentialId).fold(
-                    onSuccess = {
-                        logger.info(LogCategory.PASSKEY, "Specific passkey authentication successful")
-                        _isLoading.value = false
-                        onSuccess()
-                    },
-                    onFailure = { error ->
-                        logger.warn(LogCategory.PASSKEY, "Specific passkey authentication failed", error = error)
+            // Authenticate with specific credential ID
+            passkeyAuthentication(email, credentialId).fold(
+                onSuccess = {
+                    logger.info(LogCategory.PASSKEY, "Specific passkey authentication successful")
+                    _isLoading.value = false
+                    onSuccess()
+                },
+                onFailure = { error ->
+                    logger.warn(LogCategory.PASSKEY, "Specific passkey authentication failed", error = error)
 
-                        // Check if this is a cross-device authentication requirement
-                        if (error is CrossDeviceAuthenticationRequired) {
-                            // Only show QR dialog if browser is not already opened (embedded browser case)
-                            if (!error.browserAlreadyOpened) {
-                                _showCrossDeviceQR.value = true
-                                _crossDeviceQRUrl.value = error.qrCodeUrl
-                                _crossDeviceChallenge.value = error.challenge
-                                _crossDeviceSessionId.value = error.sessionId
-                            } else {
-                                logger.debug(LogCategory.PASSKEY, "Browser already opened (embedded), skipping QR dialog")
-                            }
-                            _isLoading.value = false
-                            return@fold
+                    // Check if this is a cross-device authentication requirement
+                    if (error is CrossDeviceAuthenticationRequired) {
+                        // Only show QR dialog if browser is not already opened (embedded browser case)
+                        if (!error.browserAlreadyOpened) {
+                            _showCrossDeviceQR.value = true
+                            _crossDeviceQRUrl.value = error.qrCodeUrl
+                            _crossDeviceChallenge.value = error.challenge
+                            _crossDeviceSessionId.value = error.sessionId
+                        } else {
+                            logger.debug(LogCategory.PASSKEY, "Browser already opened (embedded), skipping QR dialog")
                         }
-
-                        _errorMessage.value =
-                            when {
-                                error.message?.contains("not supported") == true -> {
-                                    "Biometric authentication is not supported on this device"
-                                }
-
-                                error.message?.contains("cancelled") == true -> {
-                                    "Authentication was cancelled"
-                                }
-
-                                error.message?.contains("not available") == true -> {
-                                    "Biometric authentication not available"
-                                }
-
-                                else -> {
-                                    error.message ?: "Authentication failed"
-                                }
-                            }
                         _isLoading.value = false
-                    },
-                )
-            }
+                        return@fold
+                    }
+
+                    _errorMessage.value =
+                        when {
+                            error.message?.contains("not supported") == true -> {
+                                "Biometric authentication is not supported on this device"
+                            }
+
+                            error.message?.contains("cancelled") == true -> {
+                                "Authentication was cancelled"
+                            }
+
+                            error.message?.contains("not available") == true -> {
+                                "Biometric authentication not available"
+                            }
+
+                            else -> {
+                                error.message ?: "Authentication failed"
+                            }
+                        }
+                    _isLoading.value = false
+                },
+            )
+        }
     }
 
     /**
      * Dismiss the cross-device QR dialog
+     *
+     * Retires the full cross-device identity of the dismissed attempt: the session id
+     * must not survive in exposed state once the user has cancelled the flow.
      */
     fun dismissCrossDeviceQR() {
         _showCrossDeviceQR.value = false
         _crossDeviceQRUrl.value = null
         _crossDeviceChallenge.value = null
+        _crossDeviceSessionId.value = null
     }
 
     /**
