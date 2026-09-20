@@ -1,6 +1,7 @@
 package ai.rever.boss.config
 
 import ai.rever.boss.plugin.pathutils.BossDirectories
+import ai.rever.boss.utils.BoundedZipExtractor
 import ai.rever.boss.utils.VersionConstants
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
@@ -15,7 +16,6 @@ import java.net.URL
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
-import java.util.zip.ZipInputStream
 
 /**
  * Utility for auto-downloading BOSS-branded Chromium binaries.
@@ -734,12 +734,17 @@ object ChromiumAutoDownloader {
      * On macOS, uses native `ditto` to preserve symlinks, resource forks,
      * and code signatures. Java's ZipInputStream breaks macOS framework
      * symlinks (e.g. Versions/Current), causing Chromium startup failures.
+     *
+     * Both paths are bounded by [BoundedZipExtractor.ENGINE_LIMITS] first: ditto honours
+     * neither containment nor size caps of its own, so the archive's declared central
+     * directory is checked before it runs; the Java path checks the written bytes too.
      */
     private fun extractZip(
         zipPath: Path,
         targetDir: Path,
     ) {
         logger.debug(LogCategory.BROWSER, "Extracting Chromium", mapOf("targetDir" to targetDir.toString()))
+        BoundedZipExtractor.verifyDeclaredWithinLimits(zipPath)
         Files.createDirectories(targetDir)
 
         if (System.getProperty("os.name").lowercase().contains("mac")) {
@@ -773,50 +778,29 @@ object ChromiumAutoDownloader {
     }
 
     /**
-     * Extract using Java's ZipInputStream (non-macOS or fallback).
+     * Extract using Java (non-macOS or fallback). Delegates to [BoundedZipExtractor],
+     * which resolves each entry against the target directory and refuses escapes,
+     * symlink entries and archives beyond the engine limits while extracting, then
+     * hands each written file back so the executable bit survives.
      */
     private fun extractWithJava(
         zipPath: Path,
         targetDir: Path,
     ) {
-        ZipInputStream(Files.newInputStream(zipPath)).use { zis ->
-            var entry = zis.nextEntry
-            while (entry != null) {
-                val targetPath = targetDir.resolve(entry.name).normalize()
+        BoundedZipExtractor.extract(zipPath, targetDir) { entry, extractedPath ->
+            // Preserve executable bit on Unix
+            if (!System.getProperty("os.name").lowercase().contains("win")) {
+                val name = entry.name.lowercase()
+                val isMacOSExecutable = name.contains(".app/contents/macos/")
+                val isChromium = name.contains("chromium") || name.contains("boss")
+                val isSharedLib = name.endsWith(".so")
+                val isShellScript = name.endsWith(".sh")
+                val fileName = extractedPath.fileName.toString()
+                val hasNoExtension = !fileName.contains(".")
 
-                // Security check: prevent zip slip attack
-                if (!targetPath.startsWith(targetDir)) {
-                    throw SecurityException("Zip entry outside target directory: ${entry.name}")
+                if (isMacOSExecutable || isChromium || isSharedLib || isShellScript || hasNoExtension) {
+                    extractedPath.toFile().setExecutable(true)
                 }
-
-                if (entry.isDirectory) {
-                    Files.createDirectories(targetPath)
-                } else {
-                    // Ensure parent directories exist
-                    Files.createDirectories(targetPath.parent)
-
-                    Files.newOutputStream(targetPath).use { output ->
-                        zis.copyTo(output)
-                    }
-
-                    // Preserve executable bit on Unix
-                    if (!System.getProperty("os.name").lowercase().contains("win")) {
-                        val name = entry.name.lowercase()
-                        val isMacOSExecutable = name.contains(".app/contents/macos/")
-                        val isChromium = name.contains("chromium") || name.contains("boss")
-                        val isSharedLib = name.endsWith(".so")
-                        val isShellScript = name.endsWith(".sh")
-                        val fileName = targetPath.fileName.toString()
-                        val hasNoExtension = !fileName.contains(".")
-
-                        if (isMacOSExecutable || isChromium || isSharedLib || isShellScript || hasNoExtension) {
-                            targetPath.toFile().setExecutable(true)
-                        }
-                    }
-                }
-
-                zis.closeEntry()
-                entry = zis.nextEntry
             }
         }
     }
