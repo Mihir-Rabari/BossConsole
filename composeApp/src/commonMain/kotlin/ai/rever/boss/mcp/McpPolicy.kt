@@ -37,6 +37,7 @@ enum class McpApprovalDisposition {
     CANCELLED_AWAITING_APPROVAL,
     CANCELLED_IN_FLIGHT,
     QUEUE_FULL,
+    SESSION_GUARD_BLOCKED,
 
     /**
      * The operator chose "Trust this plugin" and the persisted, provider-wide grant actually
