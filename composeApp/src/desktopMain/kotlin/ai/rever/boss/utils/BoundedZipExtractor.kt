@@ -21,7 +21,7 @@ import kotlin.math.min
  * small archive that inflates without bound. The engine installer's checksum verification
  * authenticates WHICH archive gets extracted; these checks bound WHAT any archive can do to
  * the filesystem, whatever the checksums say and whichever platform extractor runs (Java here,
- * `ditto` on macOS, which sees only the declared-metadata pre-scan).
+ * `ditto` on macOS, which extracts only after the same entry-name and declared-metadata gate).
  *
  * Containment is lexical, mirroring the editor file IO policy: the caller creates the
  * extraction root fresh, every entry name is resolved against it, and any name that
@@ -109,6 +109,30 @@ internal object BoundedZipExtractor {
                 largest = largestEntry,
                 limits = limits,
             )
+        }
+    }
+
+    /**
+     * Gate an archive for an extractor that cannot contain it itself (macOS `ditto`):
+     * the declared-limits refusal above, plus the same entry-name containment and symlink
+     * refusal [extract] enforces per entry. `ditto` honours none of these, so for that
+     * path this gate is the whole containment - it must run before the extractor does.
+     * The Java path re-checks everything while extracting; passing this gate is what
+     * guarantees both platforms refuse the same archives.
+     */
+    fun verifyExtractableWithin(
+        zipPath: Path,
+        rootDir: Path,
+        limits: Limits = ENGINE_LIMITS,
+    ) {
+        verifyDeclaredWithinLimits(zipPath, limits)
+        val root = rootDir.toAbsolutePath().normalize()
+        val symlinkNames = symlinkEntryNames(zipPath)
+        ZipFile(zipPath.toFile()).use { zip ->
+            val entries = zip.entries()
+            while (entries.hasMoreElements()) {
+                resolveWithin(root, entries.nextElement(), symlinkNames)
+            }
         }
     }
 

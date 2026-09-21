@@ -735,16 +735,17 @@ object ChromiumAutoDownloader {
      * and code signatures. Java's ZipInputStream breaks macOS framework
      * symlinks (e.g. Versions/Current), causing Chromium startup failures.
      *
-     * Both paths are bounded by [BoundedZipExtractor.ENGINE_LIMITS] first: ditto honours
-     * neither containment nor size caps of its own, so the archive's declared central
-     * directory is checked before it runs; the Java path checks the written bytes too.
+     * Both paths are gated by [BoundedZipExtractor.verifyExtractableWithin] first: ditto
+     * honours neither containment nor size caps of its own, so escaping entry names, symlink
+     * entries and the declared central directory are all checked before it runs; the Java
+     * path re-checks containment and the written bytes while extracting.
      */
     private fun extractZip(
         zipPath: Path,
         targetDir: Path,
     ) {
         logger.debug(LogCategory.BROWSER, "Extracting Chromium", mapOf("targetDir" to targetDir.toString()))
-        BoundedZipExtractor.verifyDeclaredWithinLimits(zipPath)
+        BoundedZipExtractor.verifyExtractableWithin(zipPath, targetDir)
         Files.createDirectories(targetDir)
 
         if (System.getProperty("os.name").lowercase().contains("mac")) {

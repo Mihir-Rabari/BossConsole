@@ -189,4 +189,28 @@ class BoundedZipExtractorTest {
         }
         BoundedZipExtractor.verifyDeclaredWithinLimits(zip.toPath(), acceptingLimits)
     }
+
+    @Test
+    fun `the pre-scan refuses escaping entry names for extractors that cannot contain`() {
+        val zip =
+            zipOf(
+                "inside.txt" to "ok".toByteArray(),
+                "../escape.txt" to "pwned".toByteArray(),
+            )
+
+        assertFailsWith<SecurityException> {
+            BoundedZipExtractor.verifyExtractableWithin(zip.toPath(), extractDir.toPath())
+        }
+
+        assertFalse(File(root, "escape.txt").exists(), "the pre-scan writes nothing at all")
+    }
+
+    @Test
+    fun `the pre-scan refuses symlink entries for extractors that cannot contain`() {
+        val zip = ZipArchiveFixtures.symlinkModeEntry(File(root, "symlink.zip"), "innocent.txt")
+
+        assertFailsWith<SecurityException> {
+            BoundedZipExtractor.verifyExtractableWithin(zip.toPath(), extractDir.toPath())
+        }
+    }
 }
