@@ -130,40 +130,70 @@ internal object BoundedZipExtractor {
         val root = rootDir.toAbsolutePath().normalize()
         val symlinkNames = symlinkEntryNames(zipPath)
         ZipFile(zipPath.toFile()).use { zip ->
-            val links = mutableMapOf<Path, Path>()
-            if (allowFrameworkSymlinks) {
-                val entries = zip.entries()
-                while (entries.hasMoreElements()) {
-                    val entry = entries.nextElement()
-                    if (entry.name !in symlinkNames) continue
-                    if (!entry.name.contains(".framework/")) {
-                        throw SecurityException("Refusing non-framework symlink: ${entry.name}")
-                    }
-                    val linkPath = resolveEntryName(root, entry.name)
-                    val target = zip.getInputStream(entry).use { String(it.readNBytes(4_097), Charsets.UTF_8) }
-                    if (target.isEmpty() || target.length > 4_096 || '\u0000' in target || Path.of(target).isAbsolute) {
-                        throw SecurityException("Refusing unsafe symlink target: ${entry.name}")
-                    }
-                    val targetPath = linkPath.parent.resolve(target).normalize()
-                    if (!targetPath.startsWith(root)) {
-                        throw SecurityException("Symlink target escapes extraction root: ${entry.name}")
-                    }
-                    links[linkPath] = targetPath
-                }
-            }
-            val entries = zip.entries()
-            while (entries.hasMoreElements()) {
-                val entry = entries.nextElement()
-                if (!allowFrameworkSymlinks && entry.name in symlinkNames) {
-                    throw SecurityException("Refusing to extract symlink entry: ${entry.name}")
-                }
-                val path = resolveEntryName(root, entry.name)
-                resolveLinkPath(root, root.relativize(path), links)
-            }
+            val links = if (allowFrameworkSymlinks) frameworkLinks(zip, root, symlinkNames) else emptyMap()
+            verifyEntryPaths(zip, root, symlinkNames, links, allowFrameworkSymlinks)
         }
     }
 
-    private fun resolveEntryName(root: Path, name: String): Path {
+    private fun frameworkLinks(
+        zip: ZipFile,
+        root: Path,
+        symlinkNames: Set<String>,
+    ): Map<Path, Path> {
+        val links = mutableMapOf<Path, Path>()
+        val entries = zip.entries()
+        while (entries.hasMoreElements()) {
+            val entry = entries.nextElement()
+            if (entry.name in symlinkNames) {
+                val linkPath = resolveEntryName(root, entry.name)
+                links[linkPath] = frameworkLinkTarget(zip, entry, root, linkPath)
+            }
+        }
+        return links
+    }
+
+    private fun frameworkLinkTarget(
+        zip: ZipFile,
+        entry: ZipEntry,
+        root: Path,
+        linkPath: Path,
+    ): Path {
+        if (!entry.name.contains(".framework/")) {
+            throw SecurityException("Refusing non-framework symlink: ${entry.name}")
+        }
+        val target = zip.getInputStream(entry).use { String(it.readNBytes(4_097), Charsets.UTF_8) }
+        if (target.isEmpty() || target.length > 4_096 || '\u0000' in target || Path.of(target).isAbsolute) {
+            throw SecurityException("Refusing unsafe symlink target: ${entry.name}")
+        }
+        val targetPath = linkPath.parent.resolve(target).normalize()
+        if (!targetPath.startsWith(root)) {
+            throw SecurityException("Symlink target escapes extraction root: ${entry.name}")
+        }
+        return targetPath
+    }
+
+    private fun verifyEntryPaths(
+        zip: ZipFile,
+        root: Path,
+        symlinkNames: Set<String>,
+        links: Map<Path, Path>,
+        allowFrameworkSymlinks: Boolean,
+    ) {
+        val entries = zip.entries()
+        while (entries.hasMoreElements()) {
+            val entry = entries.nextElement()
+            if (!allowFrameworkSymlinks && entry.name in symlinkNames) {
+                throw SecurityException("Refusing to extract symlink entry: ${entry.name}")
+            }
+            val path = resolveEntryName(root, entry.name)
+            resolveLinkPath(root, root.relativize(path), links)
+        }
+    }
+
+    private fun resolveEntryName(
+        root: Path,
+        name: String,
+    ): Path {
         if (name.split('/').any { it == ".." }) throw SecurityException("Zip entry contains parent traversal: $name")
         val path = root.resolve(name).normalize()
         if (!path.startsWith(root)) throw SecurityException("Zip entry outside target directory: $name")

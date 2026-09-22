@@ -236,7 +236,11 @@ class BoundedZipExtractorTest {
             )
 
         assertFailsWith<SecurityException> {
-            BoundedZipExtractor.verifyExtractableWithin(zip.toPath(), extractDir.toPath(), allowFrameworkSymlinks = true)
+            BoundedZipExtractor.verifyExtractableWithin(
+                zip.toPath(),
+                extractDir.toPath(),
+                allowFrameworkSymlinks = true,
+            )
         }
     }
 }
