@@ -6,6 +6,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.decodeFromString
@@ -343,10 +344,13 @@ class UserDataStorageMergeTest {
         } catch (e: SerializationException) {
             torn.add("a reader saw a record it could not decode: " + e.message)
             true
-        } catch (e: IOException) {
+        } catch (_: IOException) {
             // A transient refusal to open the file while the atomic replace
             // lands (e.g. a Windows sharing violation): no content was
-            // observed, so it is not a torn record - just read again.
+            // observed, so it is not a torn record - just read again. The
+            // exception is deliberately ignored (detekt SwallowedException
+            // exempts a `_` parameter), matching the reader's existing
+            // tolerance for the race's atomic-replace window.
             false
         }
     }
@@ -370,19 +374,24 @@ class UserDataStorageMergeTest {
             "the torn-read detector never read the record from disk",
         )
         val start = CompletableDeferred<Unit>()
-        val writers =
-            (0 until 24).map { i ->
-                async {
-                    start.await()
-                    if (i % 2 == 0) {
-                        UserDataStorage.saveUserData(if (i % 4 == 0) user1 else user2)
-                    } else {
-                        UserDataStorage.setPluginWizardCompleted(i % 3 == 0)
+        // coroutineScope keeps the writers on this function's scope (a bare
+        // async in a suspend fun would pick the deprecated unscoped overload)
+        // and joins them before returning.
+        coroutineScope {
+            val writers =
+                (0 until 24).map { i ->
+                    async {
+                        start.await()
+                        if (i % 2 == 0) {
+                            UserDataStorage.saveUserData(if (i % 4 == 0) user1 else user2)
+                        } else {
+                            UserDataStorage.setPluginWizardCompleted(i % 3 == 0)
+                        }
                     }
                 }
-            }
-        start.complete(Unit)
-        writers.awaitAll()
+            start.complete(Unit)
+            writers.awaitAll()
+        }
         stop.set(true)
         reader.join(5_000L)
     }
