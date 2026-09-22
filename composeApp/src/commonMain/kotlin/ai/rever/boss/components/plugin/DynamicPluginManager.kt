@@ -897,6 +897,34 @@ class DynamicPluginManager(
                     ai.rever.boss.plugin.api.Version
                         .parse(incoming.version)
                 if (installed != null && candidate != null && candidate > installed) {
+                    // Pre-check the trust gate BEFORE paying for the swap: it
+                    // unloads every plugin in every manager and re-runs
+                    // fromPluginDir, which now refuses unverifiable jars. A
+                    // swap triggered by this jar's manifest version that the
+                    // gate cannot verify would tear everything down and land
+                    // on an older jar or an empty layer - strictly worse
+                    // than the layer we just unloaded (BossConsole#851).
+                    val swapDir = java.io.File(jarPath).parentFile ?: java.io.File(".")
+                    val verified =
+                        ai.rever.boss.plugin.loader.ApiClassLoader
+                            .latestVerifiedApiJar(swapDir)
+                    if (verified == null || verified.version < candidate) {
+                        logger.warn(
+                            LogCategory.SYSTEM,
+                            "Newer api jar has no trust proof that verifies over its " +
+                                "claimed identity - refusing the hot swap rather than " +
+                                "degrading the live API layer",
+                            mapOf(
+                                "incomingVersion" to candidate.toString(),
+                                "newestVerifiedVersion" to (verified?.version?.toString() ?: "none"),
+                            ),
+                        )
+                        return Result.failure(
+                            IllegalStateException(
+                                "api jar ${candidate} cannot be verified; the API layer was not swapped",
+                            ),
+                        )
+                    }
                     logger.info(
                         LogCategory.SYSTEM,
                         "Newer api plugin installed - hot-swapping the API layer",
@@ -905,7 +933,7 @@ class DynamicPluginManager(
                             "to" to candidate.toString(),
                         ),
                     )
-                    hotSwapApiLayer(java.io.File(jarPath).parentFile ?: java.io.File(".")).onFailure {
+                    hotSwapApiLayer(swapDir).onFailure {
                         return Result.failure(it)
                     }
                     // If the swap's snapshot contained the api plugin, it was

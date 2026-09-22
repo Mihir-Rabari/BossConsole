@@ -46,7 +46,7 @@ class ApiClassLoaderVerificationTest {
         PluginClassLoaderManager.resetSharedApiLayerForTests()
         tempDirs.forEach { it.deleteRecursively() }
         System.clearProperty("boss.dev.mode")
-        System.clearProperty(PluginSignatureEnforcement.PROPERTY)
+        System.clearProperty(ApiClassLoader.ENFORCE_PROPERTY)
     }
 
     private fun testVerifier(): PluginSignatureVerifier =
@@ -279,5 +279,62 @@ class ApiClassLoaderVerificationTest {
         // loading in development.
         val loader = ApiClassLoader.fromPluginDir(dir, bareParent(), testVerifier())
         assertEquals("1.0.0", loader.apiVersion)
+    }
+
+    // --- Fail-closed asymmetries claimed in apiJarRejectionReason's KDoc ---
+    //
+    // Both properties hold today only because the `signature == null` branch
+    // is consulted BEFORE bundled trust and dev mode. A reordering would pass
+    // every earlier test in this file.
+
+    @Test
+    fun `a present-but-invalid sidecar is not rescued by a valid bundled-trust marker`() {
+        val dir = tempDir()
+        val jar = apiJar(dir, "1.0.0")
+        // A valid bundled-trust marker for the current bytes...
+        PluginBundledTrust.markTrusted(jar.absolutePath, FileHashing.sha256(jar))
+        // ...and a corrupt sidecar on top. The sidecar branch must reject
+        // before the marker is ever consulted.
+        PluginSignatureSidecar.write(jar.absolutePath, "not valid base64 !!")
+
+        val loader = ApiClassLoader.fromPluginDir(dir, bareParent(), testVerifier())
+        assertNull(loader.apiVersion, "present-but-invalid always rejects, bundled-trust or not")
+    }
+
+    @Test
+    fun `dev mode does not rescue a present-but-invalid sidecar`() {
+        val dir = tempDir()
+        val jar = apiJar(dir, "1.0.0")
+        PluginSignatureSidecar.write(jar.absolutePath, "not valid base64 !!")
+        System.setProperty("boss.dev.mode", "true")
+
+        val loader = ApiClassLoader.fromPluginDir(dir, bareParent(), testVerifier())
+        assertNull(loader.apiVersion, "dev mode is a no-proof carve-out, not a broken-proof one")
+    }
+
+    // --- Rollback lever ---
+
+    @Test
+    fun `the enforcement rollback property reinstalls without a trust proof`() {
+        val dir = tempDir()
+        apiJar(dir, "1.0.0") // no sidecar, no marker, not dev mode
+        System.setProperty(ApiClassLoader.ENFORCE_PROPERTY, "false")
+
+        val loader = ApiClassLoader.fromPluginDir(dir, bareParent(), testVerifier())
+        assertEquals("1.0.0", loader.apiVersion, "rollback must restore pre-gate behaviour")
+    }
+
+    @Test
+    fun `latestVerifiedApiJar exposes the same selection the loader makes`() {
+        val dir = tempDir()
+        sign(apiJar(dir, "1.0.1"), "1.0.1")
+        apiJar(dir, "9.9.9") // newer, no proof
+
+        val expected = ai.rever.boss.plugin.api.Version.parse("1.0.1")
+        val latest = ApiClassLoader.latestVerifiedApiJar(dir, testVerifier())
+        assertEquals(expected, latest?.version, "the newest VERIFIED jar is what the hot-swap pre-check sees")
+
+        val loader = ApiClassLoader.fromPluginDir(dir, bareParent(), testVerifier())
+        assertEquals(expected, loader.apiVersion?.let { ai.rever.boss.plugin.api.Version.parse(it) })
     }
 }

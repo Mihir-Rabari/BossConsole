@@ -61,22 +61,35 @@ class ApiClassLoader(
      */
     val apiJarPath: String? = apiJarUrl?.let { File(it.toURI()).absolutePath }
 
-    /**
-     * An api-claiming jar candidate for the newest-selection: the jar, its
-     * parsed version (semver comparison key) and the manifest the trust
-     * anchor is derived from.
-     */
-    private data class ApiJarCandidate(
-        val jar: File,
-        val version: Version,
-        val manifest: PluginManifest,
-    )
-
     companion object {
+        /**
+         * An api-claiming jar candidate for the newest-selection: the jar,
+         * its parsed version (semver comparison key) and the manifest the
+         * trust anchor is derived from. Nested in the companion so the
+         * public [apiJarCandidates] / [latestVerifiedApiJar] / [verifyCandidate]
+         * helpers can name it.
+         */
+        data class ApiJarCandidate(
+            val jar: File,
+            val version: Version,
+            val manifest: PluginManifest,
+        )
+
         private val logger = BossLogger.forComponent("ApiClassLoader")
 
         /** Plugin id of the boss-plugin-api system plugin. */
         const val API_PLUGIN_ID = "ai.rever.boss.plugin.api"
+
+        /**
+         * Fast-rollback lever for the verification gate (BossConsole#851): set
+         * `boss.plugin.api.signature.enforce=false` (restart) to install the
+         * newest api-claiming jar without a trust proof, exactly as before the
+         * gate shipped. `boss.dev.mode` also disables the gate, but it is a
+         * broader lever (it also loosens unsigned-plugin enforcement for
+         * every plugin load); this property is scoped to the api layer alone.
+         * Defaults to enforced.
+         */
+        const val ENFORCE_PROPERTY = "boss.plugin.api.signature.enforce"
 
         /**
          * Store-signature verifier used when [fromPluginDir] is called
@@ -152,7 +165,27 @@ class ApiClassLoader(
          * claims drop the jar: a claim that cannot even be parsed never
          * becomes a candidate, let alone the API layer.
          */
-        private fun apiJarCandidates(pluginDir: File): List<ApiJarCandidate> =
+        /**
+         * All api-claiming, manifest-valid, semver-parsable jars in
+         * [pluginDir], newest-first. Public for the hot-swap pre-check
+         * (DynamicPluginManager) so a swap that could not resolve to a
+         * verified jar can be refused before it unloads anything.
+         */
+        fun apiJarCandidates(pluginDir: File): List<ApiJarCandidate> =
+            listApiJarCandidates(pluginDir)
+
+        /** The newest candidate that passes [verifyCandidate], or null. */
+        fun latestVerifiedApiJar(
+            pluginDir: File,
+            signatureVerifier: PluginSignatureVerifier = storeVerifier,
+        ): ApiJarCandidate? =
+            listApiJarCandidates(pluginDir)
+                .sortedByDescending { it.version }
+                .firstNotNullOfOrNull { candidate ->
+                    if (verifyCandidate(candidate, signatureVerifier) == null) candidate else null
+                }
+
+        private fun listApiJarCandidates(pluginDir: File): List<ApiJarCandidate> =
             pluginDir
                 .listFiles { file ->
                     file.isFile && file.extension == "jar"
@@ -218,6 +251,31 @@ class ApiClassLoader(
         private fun apiJarRejectionReason(
             candidate: ApiJarCandidate,
             signatureVerifier: PluginSignatureVerifier,
+        ): String? {
+            if (System.getProperty(ENFORCE_PROPERTY)?.toBoolean() != false) {
+                return verifyCandidate(candidate, signatureVerifier)
+            }
+            logger.warn(
+                LogCategory.SYSTEM,
+                "Api jar trust gate disabled via $ENFORCE_PROPERTY - installing without verification",
+                mapOf(
+                    "jar" to candidate.jar.name,
+                    "claimedVersion" to candidate.manifest.version,
+                ),
+            )
+            return null
+        }
+
+        /**
+         * The trust proof a candidate jar must carry to become the shared API
+         * layer. Exposed so callers deciding BEFORE a disruptive operation
+         * (the api hot swap unloads every plugin) can consult the same
+         * predicate instead of discovering the rejection afterwards
+         * (BossConsole#851 review).
+         */
+        fun verifyCandidate(
+            candidate: ApiJarCandidate,
+            signatureVerifier: PluginSignatureVerifier = storeVerifier,
         ): String? =
             try {
                 val jarPath = candidate.jar.absolutePath
@@ -258,7 +316,13 @@ class ApiClassLoader(
             } catch (e: Exception) {
                 // Fail closed: an unreadable or unhashable candidate is
                 // unverifiable, never "probably fine".
-                "verification error (${e.javaClass.simpleName})"
+                logger.debug(
+                    LogCategory.SYSTEM,
+                    "Api jar verification errored",
+                    mapOf("jar" to candidate.jar.name, "error" to e.toString()),
+                    e,
+                )
+                "verification error (${e.javaClass.simpleName}: ${e.message ?: "no detail"})"
             }
 
         private fun readVersion(jar: File): String? {
