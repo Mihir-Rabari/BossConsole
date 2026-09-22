@@ -10,12 +10,18 @@ import kotlin.test.assertTrue
  * The v9.5.21 MCP workspace tool family, pinned name by name.
  *
  * McpMutatingToolCatalog has classified the workspace lifecycle tools as mutating
- * since the family shipped, but DefaultMcpRiskEvaluator let every one of them fall
- * through to the Unclassified LOW default - so a boss-prefixed call, whose catalog
- * match also fails because the catalog keys bare names, sailed through the
- * read-only default of McpPolicyEngine.policyFor. These tests pin the closed gap:
- * all ten family names, in both spellings, must classify explicitly and land in
- * the tier the approval flow leans on.
+ * since the family shipped, and McpPolicyEngine.policyFor's isMutating OR already
+ * gave them the mutating default - but DefaultMcpRiskEvaluator let every one of
+ * them fall through to the Unclassified LOW default, so the operator-facing risk
+ * reason in the approval dialog and the MCP activity log said "Unclassified -
+ * defaulting to low risk" about six mutating tools. These tests pin the explicit
+ * classification: all ten family names must classify with a category reason and
+ * land in the tier the approval flow leans on.
+ *
+ * The mcp__boss__ prefix parity is a REGRESSION GUARD, not a fix: the evaluator
+ * has stripped that prefix since before this change, and a prefixed name cannot
+ * reach the policy engine at all (McpToolRegistryImpl.invoke resolves tools by
+ * exact bare definition name and reports unknown before any policy consult).
  */
 class McpRiskEvaluatorWorkspaceToolsTest {
     private val evaluator = DefaultMcpRiskEvaluator()
