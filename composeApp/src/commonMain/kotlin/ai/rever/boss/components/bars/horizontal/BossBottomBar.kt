@@ -540,8 +540,9 @@ private fun McpActivityStatusItem() {
     val recentOps by McpToolRegistryImpl.ledger.recentOperations.collectAsState()
     var showActivityLog by remember { mutableStateOf(false) }
     var showFlightPlan by remember { mutableStateOf(false) }
-    val tools by McpToolRegistryImpl.tools.collectAsState()
-    val shouldRender = recentOps.isNotEmpty() || tools.isNotEmpty() || showActivityLog || showFlightPlan
+    val allTools by McpToolRegistryImpl.allTools.collectAsState()
+    val shouldRender =
+        mcpActivityStatusShouldRender(recentOps.isNotEmpty(), allTools.isNotEmpty(), showActivityLog, showFlightPlan)
     if (!shouldRender) return
     // The most recent CALL: a YOLO on/off marker is in the ledger for audit but is not a call.
     val lastOp = recentOps.firstOrNull { !it.approvalDisposition.isGovernanceEvent }
@@ -581,6 +582,13 @@ private fun McpActivityStatusItem() {
         McpFlightPlanLauncher(onDismiss = { showFlightPlan = false })
     }
 }
+
+internal fun mcpActivityStatusShouldRender(
+    hasRecentOperations: Boolean,
+    hasRegisteredTools: Boolean,
+    showActivityLog: Boolean,
+    showFlightPlan: Boolean,
+): Boolean = hasRecentOperations || hasRegisteredTools || showActivityLog || showFlightPlan
 
 /**
  * A clickable bottom-bar item sized to the bar: 11sp text, a 13dp icon and 2dp of vertical

@@ -1,6 +1,7 @@
 package ai.rever.boss.components.dialogs
 
 import ai.rever.boss.mcp.McpFlightPlanInput
+import ai.rever.boss.mcp.mcpPolicyFaultBlocksInvocation
 import ai.rever.boss.mcp.McpToolRegistryImpl
 import ai.rever.boss.mcp.mcpFlightPlan
 import androidx.compose.runtime.Composable
@@ -39,7 +40,7 @@ fun McpFlightPlanLauncher(onDismiss: () -> Unit) {
                                         tool.providerId,
                                         tool.definition.readOnly,
                                     ),
-                                policyFaulted = policyFault != null,
+                                policyFaulted = mcpPolicyFaultBlocksInvocation(policyFault),
                             ),
                         ),
                 )

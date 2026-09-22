@@ -36,10 +36,24 @@ class McpFlightPlanTest {
 
     @Test
     fun `unhealthy policy storage fails closed in the forecast`() {
-        val plan = mcpFlightPlan(input(policy = McpPolicyAction.ALLOW, policyFaulted = true))
+        val fault = McpPolicyFault.PersistedPolicyUnreadable("policy.json", "invalid")
+        val plan = mcpFlightPlan(input(policy = McpPolicyAction.DENY, policyFaulted = mcpPolicyFaultBlocksInvocation(fault)))
 
         assertEquals(McpFlightOutcome.WITHHELD, plan.outcome)
         assertTrue(plan.checkpoints.any { it.label == "Policy" && it.state == McpFlightCheckpointState.BLOCKED })
+    }
+
+    @Test
+    fun `policy write faults do not withhold a tool that remains allowed`() {
+        val faults = listOf(
+            McpPolicyFault.PolicyPersistFailed("git_status", "disk full"),
+            McpPolicyFault.ProviderPolicyPersistFailed("test-provider", "disk full"),
+        )
+        faults.forEach { fault ->
+            val plan =
+                mcpFlightPlan(input(policy = McpPolicyAction.ALLOW, policyFaulted = mcpPolicyFaultBlocksInvocation(fault)))
+            assertEquals(McpFlightOutcome.READY_TO_RUN, plan.outcome)
+        }
     }
 
     @Test

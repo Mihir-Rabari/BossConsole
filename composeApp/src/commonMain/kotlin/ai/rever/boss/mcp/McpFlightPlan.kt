@@ -21,6 +21,9 @@ data class McpFlightPlanInput(
     val policyFaulted: Boolean,
 )
 
+/** Only an unreadable policy file makes the live policy resolver fail closed. */
+fun mcpPolicyFaultBlocksInvocation(fault: McpPolicyFault?): Boolean = fault is McpPolicyFault.PersistedPolicyUnreadable
+
 /** One visible checkpoint on an MCP tool's pre-execution route. */
 data class McpFlightCheckpoint(
     val label: String,
