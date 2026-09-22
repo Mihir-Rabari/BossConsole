@@ -160,19 +160,12 @@ class ApiClassLoader(
         }
 
         /**
-         * Scan [pluginDir] for jars whose manifest claims to be the api
-         * plugin. Manifest read/validation failures and unparseable version
-         * claims drop the jar: a claim that cannot even be parsed never
-         * becomes a candidate, let alone the API layer.
-         */
-        /**
          * All api-claiming, manifest-valid, semver-parsable jars in
          * [pluginDir], newest-first. Public for the hot-swap pre-check
          * (DynamicPluginManager) so a swap that could not resolve to a
          * verified jar can be refused before it unloads anything.
          */
-        fun apiJarCandidates(pluginDir: File): List<ApiJarCandidate> =
-            listApiJarCandidates(pluginDir)
+        fun apiJarCandidates(pluginDir: File): List<ApiJarCandidate> = listApiJarCandidates(pluginDir)
 
         /** The newest candidate that passes [verifyCandidate], or null. */
         fun latestVerifiedApiJar(
@@ -320,7 +313,6 @@ class ApiClassLoader(
                     LogCategory.SYSTEM,
                     "Api jar verification errored",
                     mapOf("jar" to candidate.jar.name, "error" to e.toString()),
-                    e,
                 )
                 "verification error (${e.javaClass.simpleName}: ${e.message ?: "no detail"})"
             }

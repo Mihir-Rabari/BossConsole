@@ -330,11 +330,19 @@ class ApiClassLoaderVerificationTest {
         sign(apiJar(dir, "1.0.1"), "1.0.1")
         apiJar(dir, "9.9.9") // newer, no proof
 
-        val expected = ai.rever.boss.plugin.api.Version.parse("1.0.1")
+        val expected =
+            ai.rever.boss.plugin.api.Version
+                .parse("1.0.1")
         val latest = ApiClassLoader.latestVerifiedApiJar(dir, testVerifier())
         assertEquals(expected, latest?.version, "the newest VERIFIED jar is what the hot-swap pre-check sees")
 
         val loader = ApiClassLoader.fromPluginDir(dir, bareParent(), testVerifier())
-        assertEquals(expected, loader.apiVersion?.let { ai.rever.boss.plugin.api.Version.parse(it) })
+        val parsed =
+            loader.apiVersion
+                ?.let {
+                    ai.rever.boss.plugin.api.Version
+                        .parse(it)
+                }
+        assertEquals(expected, parsed)
     }
 }
