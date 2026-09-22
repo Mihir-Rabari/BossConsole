@@ -329,7 +329,8 @@ class GitProviderWritesToRepoTest {
         // refname the test would otherwise model a phantom attack.
         git(dir, "update-ref", "refs/remotes/origin/-f", "HEAD")
         assertTrue(
-            git(dir, "rev-parse", "--verify", "refs/remotes/origin/-f").trim()
+            git(dir, "rev-parse", "--verify", "refs/remotes/origin/-f")
+                .trim()
                 .matches(Regex("^[0-9a-f]{40}$")),
             "the planted ref must exist for this test to model the attack",
         )
