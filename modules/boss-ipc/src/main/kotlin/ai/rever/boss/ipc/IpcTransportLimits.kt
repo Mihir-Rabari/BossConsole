@@ -54,9 +54,11 @@ class IpcTransportLimits(
             .maxConcurrentCallsPerConnection(maxConcurrentCallsPerConnection)
             .maxConnectionIdle(maxConnectionIdleMillis, TimeUnit.MILLISECONDS)
 
-    /** The reader bound applies to responses as well, so a hostile kernel cannot OOM a child. */
-    @Suppress("MaxLineLength") // ktlint's expression-body idiom requires the joined single-line form
-    internal fun applyToChannel(builder: NettyChannelBuilder): NettyChannelBuilder = builder.maxInboundMessageSize(maxInboundMessageBytes)
+    /** Response messages and metadata must obey the same bounds as requests. */
+    internal fun applyToChannel(builder: NettyChannelBuilder): NettyChannelBuilder =
+        builder
+            .maxInboundMessageSize(maxInboundMessageBytes)
+            .maxInboundMetadataSize(maxInboundMetadataBytes)
 
     companion object {
         /** Matches io.grpc's wire default, so pinning it changes nothing for well-formed traffic. */

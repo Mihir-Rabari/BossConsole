@@ -12,7 +12,14 @@ import ai.rever.boss.ipc.services.EventBusServiceImpl
 import ai.rever.boss.ipc.services.KernelServiceImpl
 import ai.rever.boss.ipc.services.StateServiceImpl
 import com.google.protobuf.ByteString
+import io.grpc.BindableService
 import io.grpc.ConnectivityState
+import io.grpc.ForwardingServerCall
+import io.grpc.Metadata
+import io.grpc.ServerCall
+import io.grpc.ServerCallHandler
+import io.grpc.ServerInterceptor
+import io.grpc.ServerInterceptors
 import io.grpc.Status
 import io.grpc.StatusException
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -115,6 +122,47 @@ class IpcTransportLimitsTest {
                     "fine",
                     reader.getState(StateKey.newBuilder().setKey("small").build()).value.toStringUtf8(),
                 )
+            }
+        }
+
+    @Test
+    fun `oversized response metadata is refused by the authenticated child reader`() =
+        runBlocking {
+            val oversizedHeaders =
+                object : ServerInterceptor {
+                    override fun <ReqT : Any?, RespT : Any?> interceptCall(
+                        call: ServerCall<ReqT, RespT>,
+                        headers: Metadata,
+                        next: ServerCallHandler<ReqT, RespT>,
+                    ): ServerCall.Listener<ReqT> {
+                        val wrapped =
+                            object : ForwardingServerCall.SimpleForwardingServerCall<ReqT, RespT>(call) {
+                                override fun sendHeaders(responseHeaders: Metadata) {
+                                    responseHeaders.put(
+                                        Metadata.Key.of("oversized-response", Metadata.ASCII_STRING_MARSHALLER),
+                                        "x".repeat(2_048),
+                                    )
+                                    super.sendHeaders(responseHeaders)
+                                }
+                            }
+                        return next.startCall(wrapped, headers)
+                    }
+                }
+            val service =
+                object : BindableService {
+                    override fun bindService() = ServerInterceptors.intercept(KernelServiceImpl(), oversizedHeaders)
+                }
+            IpcTestServer(service).use { host ->
+                val reader =
+                    KernelServiceGrpcKt.KernelServiceCoroutineStub(
+                        host.channelFor(
+                            "metadata-reader",
+                            clientLimits = IpcTransportLimits(maxInboundMetadataBytes = 1_024),
+                        ),
+                    )
+                val request = ProcessStatusRequest.newBuilder().setProcessId("metadata-reader").build()
+                val refusal = assertFailsWith<StatusException> { reader.getProcessStatus(request) }
+                assertEquals(Status.Code.RESOURCE_EXHAUSTED, refusal.status.code)
             }
         }
 
