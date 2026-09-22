@@ -13,6 +13,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -322,6 +323,69 @@ class ApiClassLoaderVerificationTest {
 
         val loader = ApiClassLoader.fromPluginDir(dir, bareParent(), testVerifier())
         assertEquals("1.0.0", loader.apiVersion, "rollback must restore pre-gate behaviour")
+    }
+
+    /**
+     * The lever is a SECURITY control, so every spelling that means "enforce"
+     * must enforce, and an unrecognized value must fall back to ENFORCED with
+     * a warning - it must never silently disable the gate (round-3 review:
+     * `String.toBoolean()` made "1", "yes", "on" and any typo disable it).
+     * Mirrors [PluginSignatureEnforcement]'s tolerant-but-safe parsing.
+     */
+    @Test
+    fun `enforce spellings never disable the gate`() {
+        val enforced = listOf("", "true", "1", "yes", "on", "TRUE", " True ", "enabled-ish")
+        enforced.forEach { value ->
+            if (value.isEmpty()) {
+                System.clearProperty(ApiClassLoader.ENFORCE_PROPERTY)
+            } else {
+                System.setProperty(ApiClassLoader.ENFORCE_PROPERTY, value)
+            }
+            assertTrue(
+                ApiClassLoader.isGateEnforced(),
+                "value $value must leave the gate ENFORCED (unrecognized values fall back to enforced)",
+            )
+        }
+
+        val disabled = listOf("false", "0", "no", "off", "FALSE", " Off ")
+        disabled.forEach { value ->
+            System.setProperty(ApiClassLoader.ENFORCE_PROPERTY, value)
+            assertFalse(
+                ApiClassLoader.isGateEnforced(),
+                "value $value must disable the gate (explicit rollback intent)",
+            )
+        }
+        System.clearProperty(ApiClassLoader.ENFORCE_PROPERTY)
+    }
+
+    /**
+     * Rollback must be consistent across BOTH gate entry points: with the
+     * lever off, selectApiJar (the hot-swap pre-check's predicate) must return
+     * the newest jar even without proof, exactly as fromPluginDir installs it
+     * (round-3 review: a rollback that only undid the loader left the hot
+     * swap refusing - an inconsistent host).
+     */
+    @Test
+    fun `rollback lever applies to the loader and the hot-swap pre-check alike`() {
+        val dir = tempDir()
+        sign(apiJar(dir, "1.0.1"), "1.0.1")
+        apiJar(dir, "9.9.9") // newer, no proof
+
+        // Gate enforced: the pre-check sees only the verified 1.0.1.
+        assertEquals(
+            "1.0.1",
+            ApiClassLoader.selectApiJar(dir, testVerifier())?.version?.toString(),
+        )
+
+        // Lever off: the pre-check and the loader agree on the newest jar.
+        System.setProperty(ApiClassLoader.ENFORCE_PROPERTY, "false")
+        assertEquals(
+            "9.9.9",
+            ApiClassLoader.selectApiJar(dir, testVerifier())?.version?.toString(),
+            "with rollback on, the pre-check must not refuse what the loader will install",
+        )
+        val loader = ApiClassLoader.fromPluginDir(dir, bareParent(), testVerifier())
+        assertEquals("9.9.9", loader.apiVersion, "loader and pre-check must agree under rollback")
     }
 
     @Test

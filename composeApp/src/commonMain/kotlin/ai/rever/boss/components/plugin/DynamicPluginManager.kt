@@ -905,10 +905,17 @@ class DynamicPluginManager(
                     // on an older jar or an empty layer - strictly worse
                     // than the layer we just unloaded (BossConsole#851).
                     val swapDir = java.io.File(jarPath).parentFile ?: java.io.File(".")
+                    // selectApiJar owns the enforce/rollback lever, so this
+                    // pre-check agrees with what the swap's fromPluginDir will
+                    // actually install; with the lever off, the pre-gate swap
+                    // behaviour is restored end-to-end (round-3 review).
                     val verified =
                         ai.rever.boss.plugin.loader.ApiClassLoader
-                            .latestVerifiedApiJar(swapDir)
-                    if (verified == null || verified.version < candidate) {
+                            .selectApiJar(swapDir)
+                    val gateEnforced =
+                        ai.rever.boss.plugin.loader.ApiClassLoader
+                            .isGateEnforced()
+                    if (verified == null || (gateEnforced && verified.version < candidate)) {
                         logger.warn(
                             LogCategory.SYSTEM,
                             "Newer api jar has no trust proof that verifies over its " +

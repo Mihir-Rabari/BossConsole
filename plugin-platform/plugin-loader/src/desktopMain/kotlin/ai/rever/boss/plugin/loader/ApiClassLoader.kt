@@ -92,6 +92,12 @@ class ApiClassLoader(
         const val ENFORCE_PROPERTY = "boss.plugin.api.signature.enforce"
 
         /**
+         * Environment counterpart of [ENFORCE_PROPERTY] for launcher/CI/systemd
+         * rollbacks, mirroring [PluginSignatureEnforcement.ENV_VAR].
+         */
+        const val ENFORCE_ENV = "BOSS_PLUGIN_API_SIGNATURE_ENFORCE"
+
+        /**
          * Store-signature verifier used when [fromPluginDir] is called
          * without an injected one (the production paths); the pinned public
          * key is parsed once per process.
@@ -115,26 +121,7 @@ class ApiClassLoader(
             parent: ClassLoader,
             signatureVerifier: PluginSignatureVerifier = storeVerifier,
         ): ApiClassLoader {
-            val newest =
-                apiJarCandidates(pluginDir)
-                    .sortedByDescending { it.version }
-                    .firstNotNullOfOrNull { candidate ->
-                        val rejection = apiJarRejectionReason(candidate, signatureVerifier)
-                        if (rejection == null) {
-                            candidate
-                        } else {
-                            logger.warn(
-                                LogCategory.SYSTEM,
-                                "Skipping api-claiming jar without a valid trust proof",
-                                mapOf(
-                                    "jar" to candidate.jar.name,
-                                    "claimedVersion" to candidate.manifest.version,
-                                    "reason" to rejection,
-                                ),
-                            )
-                            null
-                        }
-                    }
+            val newest = selectApiJar(pluginDir, signatureVerifier)
 
             if (newest == null) {
                 logger.warn(
@@ -167,7 +154,45 @@ class ApiClassLoader(
          */
         fun apiJarCandidates(pluginDir: File): List<ApiJarCandidate> = listApiJarCandidates(pluginDir)
 
-        /** The newest candidate that passes [verifyCandidate], or null. */
+        /**
+         * The candidate [fromPluginDir] will install: the newest api-claiming
+         * jar, run through the fail-closed trust gate - UNLESS the rollback
+         * lever ([ENFORCE_PROPERTY] / [ENFORCE_ENV]) is set, in which case the
+         * newest jar installs without a trust proof, exactly the pre-gate
+         * behaviour. Startup and the hot-swap pre-check BOTH go through here,
+         * so the lever always applies the same way at every entry point
+         * (BossConsole#851 round-3 review: a rollback that only undoes the
+         * loader but not the hot-swap would be an inconsistent host).
+         */
+        fun selectApiJar(
+            pluginDir: File,
+            signatureVerifier: PluginSignatureVerifier = storeVerifier,
+        ): ApiJarCandidate? =
+            apiJarCandidates(pluginDir)
+                .sortedByDescending { it.version }
+                .firstNotNullOfOrNull { candidate ->
+                    val rejection = apiJarRejectionReason(candidate, signatureVerifier)
+                    if (rejection == null) {
+                        candidate
+                    } else {
+                        logger.warn(
+                            LogCategory.SYSTEM,
+                            "Skipping api-claiming jar without a valid trust proof",
+                            mapOf(
+                                "jar" to candidate.jar.name,
+                                "claimedVersion" to candidate.manifest.version,
+                                "reason" to rejection,
+                            ),
+                        )
+                        null
+                    }
+                }
+
+        /**
+         * The newest candidate that passes [verifyCandidate] on its OWN
+         * merits, or null. Pure verification predicate: it does NOT consult
+         * the rollback lever, which [selectApiJar] owns.
+         */
         fun latestVerifiedApiJar(
             pluginDir: File,
             signatureVerifier: PluginSignatureVerifier = storeVerifier,
@@ -203,6 +228,41 @@ class ApiClassLoader(
                         null
                     }
                 }
+
+        /**
+         * Whether the trust gate is currently enforced. Parsed with the SAME
+         * tolerant-but-safe rules as [PluginSignatureEnforcement.enforceUnsigned]
+         * (trim + lowercase, true/1/yes/on vs false/0/no/off): a security
+         * control whose "enforce" spellings silently DISABLE it is worse than
+         * no control, and an unrecognized value must fall back to the ENFORCED
+         * default with a warning, never to the weaker mode. Read once per
+         * selection (not per candidate) so a value flipped mid-scan cannot
+         * enforce for one jar and not the next.
+         */
+
+        fun isGateEnforced(): Boolean {
+            val raw = System.getProperty(ENFORCE_PROPERTY) ?: System.getenv(ENFORCE_ENV) ?: return true
+            return when (raw.trim().lowercase()) {
+                "true", "1", "yes", "on" -> {
+                    true
+                }
+
+                "false", "0", "no", "off" -> {
+                    false
+                }
+
+                else -> {
+                    logger.warn(
+                        LogCategory.SYSTEM,
+                        "Unrecognized api-gate enforcement flag value - flag IGNORED, gate stays ENFORCED",
+                        mapOf(
+                            "value" to raw,
+                        ),
+                    )
+                    true
+                }
+            }
+        }
 
         /**
          * Fail-closed trust gate a candidate must pass before it is
@@ -245,7 +305,7 @@ class ApiClassLoader(
             candidate: ApiJarCandidate,
             signatureVerifier: PluginSignatureVerifier,
         ): String? {
-            if (System.getProperty(ENFORCE_PROPERTY)?.toBoolean() != false) {
+            if (isGateEnforced()) {
                 return verifyCandidate(candidate, signatureVerifier)
             }
             logger.warn(
