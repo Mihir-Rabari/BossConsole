@@ -80,37 +80,26 @@ internal class EncryptedSessionSettings(
      * destroys the plaintext copy so the upgrade itself is the revocation. Copy first,
      * destroy second — an aborted migration must never be the end of the user's only
      * session; a failed copy is retried on the next start instead.
+     *
+     * [supabaseUrl] must be the URL the Supabase client is initialized with: supabase-kt
+     * 3.8.0 derives its default settings keys from that URL, so production tokens sit under
+     * `sb-<normalized-url>-session` and `sb-<normalized-url>-supabase_code_verifier`, not
+     * under the bare `SETTINGS_KEY` constants, which are only constructor defaults (see
+     * [legacySettingsKeyNames]). The bare constants are still probed for tokens left behind
+     * by supabase-kt versions old enough to have used them as the whole key.
      */
-    internal fun migrateFrom(legacyStore: Preferences) {
-        val keyNames =
-            listOf(
-                SettingsSessionManager.SETTINGS_KEY,
-                SettingsCodeVerifierCache.SETTINGS_KEY,
-            )
-        for (name in keyNames) {
-            val legacyValue = legacyStore.get(name, null) ?: continue
-            try {
-                if (getStringOrNull(name) == null) {
-                    putString(name, legacyValue)
-                }
-                legacyStore.remove(name)
-            } catch (e: IllegalStateException) {
-                // The encrypted store refused the write (fail-closed); keep the plaintext
-                // copy so the user is logged out only if this failure is permanent.
-                logger.warn(
-                    LogCategory.AUTH,
-                    "Keeping the legacy session for the next start after the encrypted copy failed",
-                    mapOf("key" to name, "reason" to e::class.simpleName),
+    internal fun migrateFrom(
+        legacyStore: Preferences,
+        supabaseUrl: String,
+    ) {
+        for (canonicalName in listOf(SettingsSessionManager.SETTINGS_KEY, SettingsCodeVerifierCache.SETTINGS_KEY)) {
+            val migrated =
+                migrateLegacyEntry(
+                    legacyStore,
+                    canonicalName = canonicalName,
+                    legacyNames = legacySettingsKeyNames(supabaseUrl, canonicalName),
                 )
-                return
-            } catch (e: IOException) {
-                logger.warn(
-                    LogCategory.AUTH,
-                    "Keeping the legacy session for the next start after the encrypted copy could not be written",
-                    mapOf("key" to name, "reason" to e::class.simpleName),
-                )
-                return
-            }
+            if (!migrated) return
         }
         try {
             // remove() only marks the node dirty; flush() forces the plaintext out of the
@@ -123,6 +112,50 @@ internal class EncryptedSessionSettings(
                 mapOf("reason" to e::class.simpleName),
             )
         }
+    }
+
+    /**
+     * Migrates one logical entry and reports whether the pass may continue. The first
+     * [legacyNames] candidate holding a value is the copy that survives; once the encrypted
+     * store holds the value (copied now, or from an earlier run), every candidate that still
+     * holds plaintext is destroyed, so both the URL-qualified and the bare legacy shape are
+     * revoked by a successful pass.
+     */
+    private fun migrateLegacyEntry(
+        legacyStore: Preferences,
+        canonicalName: String,
+        legacyNames: List<String>,
+    ): Boolean {
+        val populated = legacyNames.filter { legacyStore.get(it, null) != null }
+        if (populated.isEmpty()) return true
+        // legacySettingsKeyNames lists the URL-qualified key first: that is the shape the
+        // supabase-kt defaults write, so it wins over a stale bare-key leftover.
+        val legacyValue = legacyStore.get(populated.first(), null) ?: return true
+        try {
+            if (getStringOrNull(canonicalName) == null) {
+                putString(canonicalName, legacyValue)
+            }
+            for (name in populated) {
+                legacyStore.remove(name)
+            }
+        } catch (e: IllegalStateException) {
+            // The encrypted store refused the write (fail-closed); keep the plaintext
+            // copy so the user is logged out only if this failure is permanent.
+            logger.warn(
+                LogCategory.AUTH,
+                "Keeping the legacy session for the next start after the encrypted copy failed",
+                mapOf("key" to canonicalName, "reason" to e::class.simpleName),
+            )
+            return false
+        } catch (e: IOException) {
+            logger.warn(
+                LogCategory.AUTH,
+                "Keeping the legacy session for the next start after the encrypted copy could not be written",
+                mapOf("key" to canonicalName, "reason" to e::class.simpleName),
+            )
+            return false
+        }
+        return true
     }
 
     /**
@@ -355,6 +388,31 @@ internal class EncryptedSessionSettings(
 }
 
 /**
+ * The legacy plaintext key names [EncryptedSessionSettings.migrateFrom] must probe for one
+ * logical entry, derived exactly the way supabase-kt 3.8.0 derives its default settings
+ * keys (tag 3.8.0, `Auth/src/settingsMain/.../SettingsUtil.kt`):
+ *  - `SupabaseClientBuilder.build()` stores the URL scheme-stripped:
+ *    `supabaseUrl.split("//").last()`;
+ *  - `createDefaultSettingsKey` prefixes `sb-` and turns every `/` and `.` into `-` after
+ *    removing one trailing `/`;
+ *  - `Auth.createDefaultSessionManager` / `Auth.createDefaultCodeVerifierCache` then append
+ *    the bare `SETTINGS_KEY` constants, so production tokens sit under
+ *    `sb-<normalized-url>-session` and `sb-<normalized-url>-supabase_code_verifier` — the
+ *    bare constants alone are only the constructor defaults and never the default keys.
+ *
+ * The bare constant stays the second candidate for tokens written by supabase-kt versions
+ * old enough to have used it as the whole key (3.8.0 still self-migrates those on its own).
+ */
+private fun legacySettingsKeyNames(
+    supabaseUrl: String,
+    settingsKey: String,
+): List<String> {
+    val normalizedUrl = supabaseUrl.split("//").last().removeSuffix("/")
+    val qualifiedName = "sb-$normalizedUrl".replace('/', '-').replace('.', '-') + "-$settingsKey"
+    return listOf(qualifiedName, settingsKey)
+}
+
+/**
  * Builds the Auth persistence backend: an AES-GCM-encrypted store under BOSS's data
  * directory (`~/.boss/supabase`), seeded once from the plaintext `java.util.prefs` store
  * the supabase-kt defaults wrote to before BossConsole#846.
@@ -362,16 +420,23 @@ internal class EncryptedSessionSettings(
  * @param storeDirectory the directory holding [STORE_FILE_NAME] and [KEY_FILE_NAME].
  * @param legacyStore the pre-fix backend to migrate from and clean out; the default is the
  *   exact `Preferences.userRoot()` node supabase-kt's default `Settings()` resolves to.
+ * @param supabaseUrl the URL the Supabase client is initialized with; the seed derives the
+ *   real URL-qualified legacy key names from it, so the migration only runs when it is
+ *   provided. Production passes it from `SupabaseConfig.initialize` — the one place that
+ *   knows the URL the client is built with.
  */
 internal fun createEncryptedSessionSettings(
     storeDirectory: File = BossDirectories.resolve("supabase"),
     legacyStore: Preferences = Preferences.userRoot(),
+    supabaseUrl: String? = null,
 ): Settings {
     val settings =
         EncryptedSessionSettings(
             storeFile = File(storeDirectory, STORE_FILE_NAME),
             keyFile = File(storeDirectory, KEY_FILE_NAME),
         )
-    settings.migrateFrom(legacyStore)
+    if (supabaseUrl != null) {
+        settings.migrateFrom(legacyStore, supabaseUrl)
+    }
     return settings
 }

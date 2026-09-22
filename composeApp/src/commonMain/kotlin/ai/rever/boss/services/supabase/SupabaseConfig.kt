@@ -39,17 +39,18 @@ object SupabaseConfig {
      * Initialize the Supabase client with the provided credentials
      * @param url The Supabase project URL
      * @param anonKey The Supabase anonymous key
-     * @param sessionSettings the backend the Auth module persists its session through.
-     *   Defaults to the AES-GCM-encrypted store under `~/.boss/supabase` (BossConsole#846);
-     *   supabase-kt's own default is `java.util.prefs.Preferences` on the JVM, i.e.
-     *   plaintext tokens in a library-owned store outside the app's data directory.
-     *   Injectable so tests can pin what Auth actually receives without touching the
-     *   real data directory.
+     * @param sessionSettings the backend the Auth module persists its session through, or
+     *   null to build the AES-GCM-encrypted store under `~/.boss/supabase` (BossConsole#846)
+     *   seeded from the plaintext `java.util.prefs` legacy store. The legacy tokens sit under
+     *   URL-qualified keys (`sb-<normalized-url>-session`), so the seed needs the URL below;
+     *   that is why the backend is built inside this function, after the URL is known,
+     *   instead of in a parameter default. Injectable so tests can pin what Auth actually
+     *   receives without touching the real data directory.
      */
     fun initialize(
         url: String,
         anonKey: String,
-        sessionSettings: Settings = createEncryptedSessionSettings(),
+        sessionSettings: Settings? = null,
     ) {
         if (_client != null) {
             logger.debug(LogCategory.NETWORK, "Supabase client already initialized")
@@ -64,6 +65,9 @@ object SupabaseConfig {
                 } else {
                     "https://$url"
                 }
+
+            val sessionBackend =
+                sessionSettings ?: createEncryptedSessionSettings(supabaseUrl = fullUrl)
 
             _client =
                 createSupabaseClient(
@@ -82,8 +86,8 @@ object SupabaseConfig {
                         // backend rather than supabase-kt's default Settings(), which is
                         // java.util.prefs.Preferences on the JVM — plaintext tokens outside
                         // ~/.boss. See EncryptedSessionSettings.kt (BossConsole#846).
-                        sessionManager = SettingsSessionManager(sessionSettings)
-                        codeVerifierCache = SettingsCodeVerifierCache(sessionSettings)
+                        sessionManager = SettingsSessionManager(sessionBackend)
+                        codeVerifierCache = SettingsCodeVerifierCache(sessionBackend)
                     }
                     install(Postgrest)
                     defaultLoggingFactory = { level -> NamedSupabaseLogging("main", level) }

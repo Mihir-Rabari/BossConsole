@@ -30,7 +30,10 @@ import kotlin.test.fail
  * through the factory, so the crypto and on-disk format are pinned independently of where
  * production puts the files. The wiring cases then pin that production wiring: one by
  * execution against the built client, one by source — the same "read the source" stance
- * `SupabaseWiringTest` documents for services with no injection seam.
+ * `SupabaseWiringTest` documents for services with no injection seam. The migration cases
+ * seed the legacy `Preferences` node with the literal URL-qualified key names supabase-kt
+ * 3.8.0 actually writes (`sb-<normalized-url>-session`), never a derivation shared with
+ * the production code, so they break loudly if either side drifts from the real shape.
  */
 class EncryptedSessionSettingsTest {
     @TempDir
@@ -181,15 +184,19 @@ class EncryptedSessionSettingsTest {
     fun `the production client defaults to the encrypted backend`() {
         val source = sourceFile("SupabaseConfig.kt").readText()
         assertTrue(
-            source.contains("sessionSettings: Settings = createEncryptedSessionSettings()"),
-            "initialize must default to the encrypted backend",
+            source.contains("sessionSettings: Settings? = null"),
+            "initialize must default to building the encrypted backend itself",
         )
         assertTrue(
-            source.contains("sessionManager = SettingsSessionManager(sessionSettings)"),
+            source.contains("createEncryptedSessionSettings(supabaseUrl = fullUrl)"),
+            "the legacy migration must derive the URL-qualified keys from the initialized URL",
+        )
+        assertTrue(
+            source.contains("sessionManager = SettingsSessionManager(sessionBackend)"),
             "Auth must persist its session through the encrypted backend",
         )
         assertTrue(
-            source.contains("codeVerifierCache = SettingsCodeVerifierCache(sessionSettings)"),
+            source.contains("codeVerifierCache = SettingsCodeVerifierCache(sessionBackend)"),
             "Auth must persist its PKCE verifier through the encrypted backend",
         )
         assertFalse(
@@ -206,15 +213,31 @@ class EncryptedSessionSettingsTest {
     fun `legacy plaintext sessions migrate in and the plaintext copy is destroyed`() {
         val legacy = Preferences.userNodeForPackage(EncryptedSessionSettingsTest::class.java)
         legacy.clear()
-        legacy.put(SettingsSessionManager.SETTINGS_KEY, sessionJson)
-        legacy.put(SettingsCodeVerifierCache.SETTINGS_KEY, "legacy-verifier-value")
+        // Seeded with the REAL 3.8.0 key shapes, as literals: supabase-kt's defaults persist
+        // under URL-qualified names, so probing the bare SETTINGS_KEY constants (as the
+        // first cut of this migration did) would leave production tokens behind. Literals,
+        // not a derivation call, so the fixture cannot silently follow the code under test.
+        legacy.put(LEGACY_SESSION_KEY, sessionJson)
+        legacy.put(LEGACY_VERIFIER_KEY, "legacy-verifier-value")
         try {
-            val settings = createEncryptedSessionSettings(storeDirectory = temporary, legacyStore = legacy)
+            val settings =
+                createEncryptedSessionSettings(
+                    storeDirectory = temporary,
+                    legacyStore = legacy,
+                    supabaseUrl = LEGACY_SUPABASE_URL,
+                )
 
+            // Auth reads the encrypted store through the bare SETTINGS_KEY constants
+            // (SettingsSessionManager over the injected backend uses its default key), so
+            // the migration must expose the values under those names.
             assertEquals(sessionJson, settings.getStringOrNull(SettingsSessionManager.SETTINGS_KEY))
-            assertEquals("legacy-verifier-value", settings.getStringOrNull(SettingsCodeVerifierCache.SETTINGS_KEY))
-            assertNull(legacy.get(SettingsSessionManager.SETTINGS_KEY, null), "the plaintext session must be revoked")
-            assertNull(legacy.get(SettingsCodeVerifierCache.SETTINGS_KEY, null))
+            assertEquals(
+                "legacy-verifier-value",
+                settings.getStringOrNull(SettingsCodeVerifierCache.SETTINGS_KEY),
+            )
+            assertNull(legacy.get(LEGACY_SESSION_KEY, null), "the plaintext session must be revoked")
+            assertNull(legacy.get(LEGACY_VERIFIER_KEY, null), "the plaintext verifier must be revoked")
+            assertTrue(legacy.keys().isEmpty(), "no legacy plaintext may survive the migration")
             val raw = File(temporary, STORE_FILE_NAME).readText()
             assertFalse(raw.contains(ACCESS_TOKEN))
             assertFalse(raw.contains(REFRESH_TOKEN))
@@ -224,23 +247,83 @@ class EncryptedSessionSettingsTest {
     }
 
     @Test
+    fun `the url-qualified legacy session wins over a bare leftover`() {
+        val legacy = Preferences.userNodeForPackage(EncryptedSessionSettingsTest::class.java)
+        legacy.clear()
+        legacy.put(LEGACY_SESSION_KEY, sessionJson)
+        // A bare leftover only exists for ancient supabase-kt versions; the URL-qualified
+        // token is the one production wrote last, so it must win the conflict.
+        legacy.put(SettingsSessionManager.SETTINGS_KEY, """{"stale":"bare-key-session"}""")
+        try {
+            val settings =
+                createEncryptedSessionSettings(
+                    storeDirectory = temporary,
+                    legacyStore = legacy,
+                    supabaseUrl = LEGACY_SUPABASE_URL,
+                )
+
+            assertEquals(
+                sessionJson,
+                settings.getStringOrNull(SettingsSessionManager.SETTINGS_KEY),
+                "the URL-qualified token is the fresher copy; it must win",
+            )
+            assertNull(legacy.get(LEGACY_SESSION_KEY, null))
+            assertNull(legacy.get(SettingsSessionManager.SETTINGS_KEY, null))
+            assertTrue(legacy.keys().isEmpty(), "both legacy shapes must be destroyed")
+        } finally {
+            cleanUpLegacyNode(legacy)
+        }
+    }
+
+    @Test
+    fun `bare legacy keys still migrate for ancient supabase-kt versions`() {
+        val legacy = Preferences.userNodeForPackage(EncryptedSessionSettingsTest::class.java)
+        legacy.clear()
+        legacy.put(SettingsSessionManager.SETTINGS_KEY, sessionJson)
+        legacy.put(SettingsCodeVerifierCache.SETTINGS_KEY, "bare-verifier-value")
+        try {
+            val settings =
+                createEncryptedSessionSettings(
+                    storeDirectory = temporary,
+                    legacyStore = legacy,
+                    supabaseUrl = LEGACY_SUPABASE_URL,
+                )
+
+            assertEquals(sessionJson, settings.getStringOrNull(SettingsSessionManager.SETTINGS_KEY))
+            assertEquals(
+                "bare-verifier-value",
+                settings.getStringOrNull(SettingsCodeVerifierCache.SETTINGS_KEY),
+            )
+            assertTrue(legacy.keys().isEmpty(), "the bare plaintext must be revoked too")
+        } finally {
+            cleanUpLegacyNode(legacy)
+        }
+    }
+
+    @Test
     fun `an already-encrypted session wins over the stale legacy copy`() {
         val legacy = Preferences.userNodeForPackage(EncryptedSessionSettingsTest::class.java)
         legacy.clear()
-        legacy.put(SettingsSessionManager.SETTINGS_KEY, """{"stale":"legacy-value"}""")
+        legacy.put(LEGACY_SESSION_KEY, """{"stale":"legacy-value"}""")
         try {
             newStore().putString(SettingsSessionManager.SETTINGS_KEY, sessionJson)
 
-            val settings = createEncryptedSessionSettings(storeDirectory = temporary, legacyStore = legacy)
+            val settings =
+                createEncryptedSessionSettings(
+                    storeDirectory = temporary,
+                    legacyStore = legacy,
+                    supabaseUrl = LEGACY_SUPABASE_URL,
+                )
             assertEquals(
                 sessionJson,
                 settings.getStringOrNull(SettingsSessionManager.SETTINGS_KEY),
                 "the encrypted session must win; the legacy copy is never an overwrite",
             )
             assertNull(
-                legacy.get(SettingsSessionManager.SETTINGS_KEY, null),
+                legacy.get(LEGACY_SESSION_KEY, null),
                 "the stale plaintext copy must still be destroyed",
             )
+            assertTrue(legacy.keys().isEmpty())
         } finally {
             cleanUpLegacyNode(legacy)
         }
@@ -283,6 +366,20 @@ class EncryptedSessionSettingsTest {
         const val PACKAGE_DIR = "composeApp/src/commonMain/kotlin/ai/rever/boss/services/supabase"
         const val STORE_FILE_NAME = "session-store.enc"
         const val KEY_FILE_NAME = "session-store.key"
+
+        /** The URL the migration derives the legacy keys for; pinned, never read from config. */
+        const val LEGACY_SUPABASE_URL = "https://bossconsole.test.supabase.co"
+
+        /**
+         * The exact supabase-kt 3.8.0 default key shapes (`SettingsUtil.kt`: `sb-` + the
+         * scheme-stripped URL with `/` and `.` dashed, then the bare SETTINGS_KEY constant):
+         * `sb-bossconsole-test-supabase-co-session` for the session and
+         * `sb-bossconsole-test-supabase-co-supabase_code_verifier` for the PKCE verifier,
+         * for [LEGACY_SUPABASE_URL]. Pinned as literals so the fixtures prove the migration
+         * reads the keys production actually wrote, rather than whatever it derives itself.
+         */
+        const val LEGACY_SESSION_KEY = "sb-bossconsole-test-supabase-co-session"
+        const val LEGACY_VERIFIER_KEY = "sb-bossconsole-test-supabase-co-supabase_code_verifier"
 
         /** Distinctive fake JWTs: if either leaked into a file, these strings would be found. */
         const val ACCESS_TOKEN = "fake-access-jwt-3f2b9d4c8a1e0f6d.payload-SIGNATURE-6f0e"
