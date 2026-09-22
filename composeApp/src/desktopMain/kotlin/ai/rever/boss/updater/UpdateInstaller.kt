@@ -445,6 +445,7 @@ object UpdateInstaller {
      * @param downloadPath Path to the downloaded update file
      * @return InstallResult indicating success, restart required, or error
      */
+    @Suppress("LongMethod", "CyclomaticComplexMethod", "ReturnCount")
     suspend fun installUpdate(
         downloadPath: String,
         stagingDir: File = defaultStagingDir(),
