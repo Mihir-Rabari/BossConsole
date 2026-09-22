@@ -703,6 +703,17 @@ publish.openapi(publishFromGitHubRoute, async (ctx) => {
           error: e.message
         }, 400)
       }
+      // Curated publisher-facing input errors (malformed JAR, missing/invalid
+      // manifest) are actionable and safe to echo verbatim - the same rule as
+      // JarTooLargeError; anything else is driver/network text and stays
+      // behind the generic 500 envelope (issue #770).
+      if (e instanceof PublishInputError) {
+        console.error('fetchPluginFromGitHub input error:', e)
+        return ctx.json({
+          success: false,
+          error: e.message
+        }, 400)
+      }
       throw e
     }
     const { manifest, jarData, jarSize, sha256, releaseNotes, version } = githubResult

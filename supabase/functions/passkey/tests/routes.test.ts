@@ -563,6 +563,6 @@ Deno.test("POST /auth/challenge - the envelope hides a PGRST204 schema diagnosti
   assertEquals(
     logged.some((line) => line.includes('Failed to store challenge')),
     true,
-    'the fixed envelope must replace the raw error text in the result'
+    'the fixed envelope is what the store logs, not the raw driver text'
   )
 })

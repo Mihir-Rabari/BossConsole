@@ -113,7 +113,9 @@ export const generateAuthChallenge = withErrorHandler(
     })
 
     if (!storeResult.success) {
-      console.error('Failed to store challenge:', storeResult.error)
+      // storeResult.error is a fixed string by now; the driver detail was
+      // already logged by storeChallenge, so a self-describing line suffices.
+      console.error('Failed to store challenge')
       // Inert, not a distinguishable failure (review follow-up): a
       // success:false here is reachable only for an enrolled account (we got
       // past the passkey lookup), which inverts the oracle - a prober learns
