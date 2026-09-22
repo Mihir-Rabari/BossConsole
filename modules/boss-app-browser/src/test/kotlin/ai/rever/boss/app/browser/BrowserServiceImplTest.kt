@@ -165,7 +165,8 @@ class BrowserServiceImplTest {
             val response = service.navigate(navigateRequest("$scheme:payload"))
             assertFalse(response.success)
             assertTrue(response.errorMessage.contains("'x"), response.errorMessage)
-            assertFalse("x".repeat(33) in response.errorMessage, "the echoed scheme is capped at 32: ${response.errorMessage}")
+            val capped = "x".repeat(33)
+            assertFalse(capped in response.errorMessage, "the echoed scheme is capped at 32 chars")
         }
     }
 
