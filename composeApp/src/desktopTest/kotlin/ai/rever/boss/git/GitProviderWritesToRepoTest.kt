@@ -47,6 +47,24 @@ class GitProviderWritesToRepoTest {
         return dir
     }
 
+    /**
+     * A local clone of [dir] whose origin is [dir]: the only way to model a
+     * remote-tracking ref without a network. Pins `core.autocrlf=false` like
+     * [repo] so content assertions never see a CRLF rewrite on Windows CI.
+     */
+    private fun cloneOf(
+        dir: File,
+        tmp: File,
+    ): File {
+        val cloneDir = File(tmp, "clone").apply { mkdirs() }
+        git(dir, "branch", "side")
+        git(cloneDir.parentFile, "clone", "-q", dir.absolutePath, cloneDir.absolutePath)
+        git(cloneDir, "config", "user.email", "t@example.com")
+        git(cloneDir, "config", "user.name", "Test")
+        git(cloneDir, "config", "core.autocrlf", "false")
+        return cloneDir
+    }
+
     private fun provider(dir: File): GitDataProviderImpl {
         val state = WindowGitState("w")
         return GitDataProviderImpl(state, { "w" }) { dir.absolutePath }
@@ -283,11 +301,7 @@ class GitProviderWritesToRepoTest {
         val dir = repo(tmp)
         // Simulate a remote-tracking ref without a network: clone into a second
         // worktree-free local clone whose origin is the first repo.
-        val cloneDir = File(tmp, "clone").apply { mkdirs() }
-        git(dir, "branch", "side")
-        git(cloneDir.parentFile, "clone", "-q", dir.absolutePath, cloneDir.absolutePath)
-        git(cloneDir, "config", "user.email", "t@example.com")
-        git(cloneDir, "config", "user.name", "Test")
+        val cloneDir = cloneOf(dir, tmp)
 
         val result = provider(cloneDir).checkout("origin/side")
 
@@ -311,13 +325,24 @@ class GitProviderWritesToRepoTest {
         // picker then offers "origin/-f", and the old code assembled
         // `git checkout -f --`, which discards every uncommitted modification
         // with no prompt.
+        // The plant itself must be a legal ref; if a future git rejects the
+        // refname the test would otherwise model a phantom attack.
         git(dir, "update-ref", "refs/remotes/origin/-f", "HEAD")
+        assertTrue(
+            git(dir, "rev-parse", "--verify", "refs/remotes/origin/-f").trim()
+                .matches(Regex("^[0-9a-f]{40}$")),
+            "the planted ref must exist for this test to model the attack",
+        )
         File(dir, "tracked.txt").writeText("dirty\n")
-        val headBefore = git(dir, "rev-parse", "--abbrev-ref", "HEAD").trim()
+        val headBefore = git(dir, "rev-parse", "HEAD").trim()
 
         val result = provider(dir).checkout("origin/-f")
 
-        assertTrue(result !is GitOperationResultData.Success, "checkout accepted origin/-f: $result")
+        assertEquals(
+            GitOperationResultData.Error("Refused an unsafe ref: branch"),
+            result,
+            "checkout must refuse origin/-f at the gate, not via git's own failure",
+        )
         assertEquals(
             "dirty\n",
             File(dir, "tracked.txt").readText(),
@@ -325,8 +350,8 @@ class GitProviderWritesToRepoTest {
         )
         assertEquals(
             headBefore,
-            git(dir, "rev-parse", "--abbrev-ref", "HEAD").trim(),
-            "HEAD must not have moved",
+            git(dir, "rev-parse", "HEAD").trim(),
+            "HEAD must not have moved (full hash: the branch name is stable under a same-branch move)",
         )
     }
 
@@ -340,13 +365,7 @@ class GitProviderWritesToRepoTest {
         // checkout must still DWIM to the tracking branch and CARRY the uncommitted
         // modification - proving the gate refuses flag-shaped names only, not slashed
         // names wholesale.
-        val cloneDir = File(tmp, "clone").apply { mkdirs() }
-        git(dir, "branch", "side")
-        git(cloneDir.parentFile, "clone", "-q", dir.absolutePath, cloneDir.absolutePath)
-        git(cloneDir, "config", "user.email", "t@example.com")
-        git(cloneDir, "config", "user.name", "Test")
-        // Same LF pin as repo(): the content assertion below must not see a CRLF rewrite.
-        git(cloneDir, "config", "core.autocrlf", "false")
+        val cloneDir = cloneOf(dir, tmp)
         File(cloneDir, "tracked.txt").writeText("dirty\n")
         val headBefore = git(cloneDir, "rev-parse", "--abbrev-ref", "HEAD").trim()
 
@@ -371,10 +390,16 @@ class GitProviderWritesToRepoTest {
     ) = runTest {
         val dir = repo(tmp)
         // "origin/" passes the gate on the WHOLE name; the stripped name is the
-        // empty string, which would reach git as an empty argv element.
+        // empty string, which would reach git as an empty argv element. The
+        // assertion names the gate's own message: `git checkout "" --` fails on
+        // its own, so a plain "not Success" would pass on unpatched code too.
         val result = provider(dir).checkout("origin/")
 
-        assertTrue(result !is GitOperationResultData.Success, "checkout accepted origin/: $result")
+        assertEquals(
+            GitOperationResultData.Error("Refused an unsafe ref: branch"),
+            result,
+            "origin/ must be refused by the gate, not by git's empty-arg failure",
+        )
     }
 
     @Test

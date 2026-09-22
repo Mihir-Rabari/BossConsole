@@ -605,11 +605,13 @@ fun BossDraggableComponent.BossTopLeftBar(
                     isLoading = isGitLoading,
                     onCheckout = { branchName ->
                         scope.launch {
-                            // The one write verb still on the global path: the
+                            // The one write verb that already took a
+                            // projectPathOverride and wasn't passing it: the
                             // global belongs to whichever window aligned it last,
                             // so a second window's checkout could act on the
-                            // other window's repository. Pass the override like
-                            // the neighboring verbs do.
+                            // other window's repository. The stash verbs below
+                            // still run on the global - their signatures take
+                            // no override, which is a follow-up, not this fix.
                             val result =
                                 GitService.checkout(
                                     branchName,
