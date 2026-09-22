@@ -158,18 +158,31 @@ internal object BoundedZipExtractor {
         root: Path,
         linkPath: Path,
     ): Path {
-        if (!entry.name.contains(".framework/")) {
-            throw SecurityException("Refusing non-framework symlink: ${entry.name}")
-        }
-        val target = zip.getInputStream(entry).use { String(it.readNBytes(4_097), Charsets.UTF_8) }
-        if (target.isEmpty() || target.length > 4_096 || '\u0000' in target || Path.of(target).isAbsolute) {
-            throw SecurityException("Refusing unsafe symlink target: ${entry.name}")
-        }
+        requireFrameworkLink(entry)
+        val target = readFrameworkLinkTarget(zip, entry)
         val targetPath = linkPath.parent.resolve(target).normalize()
         if (!targetPath.startsWith(root)) {
             throw SecurityException("Symlink target escapes extraction root: ${entry.name}")
         }
         return targetPath
+    }
+
+    private fun requireFrameworkLink(entry: ZipEntry) {
+        if (!entry.name.contains(".framework/")) {
+            throw SecurityException("Refusing non-framework symlink: ${entry.name}")
+        }
+    }
+
+    private fun readFrameworkLinkTarget(
+        zip: ZipFile,
+        entry: ZipEntry,
+    ): String {
+        val target = zip.getInputStream(entry).use { String(it.readNBytes(4_097), Charsets.UTF_8) }
+        val hasInvalidBytes = target.isEmpty() || target.length > 4_096 || '\u0000' in target
+        if (hasInvalidBytes || Path.of(target).isAbsolute) {
+            throw SecurityException("Refusing unsafe symlink target: ${entry.name}")
+        }
+        return target
     }
 
     private fun verifyEntryPaths(
