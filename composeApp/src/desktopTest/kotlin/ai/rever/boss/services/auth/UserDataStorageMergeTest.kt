@@ -11,7 +11,6 @@ import kotlinx.serialization.SerializationException
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import java.io.File
-import java.io.IOException
 import java.nio.file.Files
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
@@ -320,6 +319,60 @@ class UserDataStorageMergeTest {
 
     // --- (4) torn-write protection on the save path ---------------------------------
 
+    /**
+     * One iteration of the torn-read detector: decode whatever is currently on
+     * disk and record the outcome into [torn] / [detectorFailures] /
+     * [successfulDecodes]. A transient refusal to open the file while the
+     * atomic replace lands (e.g. a Windows sharing violation) observes no
+     * content, so it is not a torn record - just read again.
+     */
+    private fun runTornReadIteration(
+        torn: CopyOnWriteArrayList<String>,
+        detectorFailures: CopyOnWriteArrayList<String>,
+        successfulDecodes: AtomicInteger,
+    ) {
+        val snapshot = UserDataStorage.storageFile
+        if (!snapshot.exists()) return
+        try {
+            json.decodeFromString(
+                UserDataStorage.StoredUserData.serializer(),
+                snapshot.readText(),
+            )
+            successfulDecodes.incrementAndGet()
+        } catch (e: SerializationException) {
+            torn.add("a reader saw a record it could not decode: " + e.message)
+        } catch (@Suppress("TooGenericExceptionCaught") t: Throwable) {
+            // A torn record is a decode failure; anything else (NPE, OOM)
+            // kills the detector, which would read as "no torn records" if
+            // not recorded.
+            detectorFailures.add(t.toString())
+        }
+    }
+
+    /**
+     * The race itself: 24 writers hammering saveUserData /
+     * setPluginWizardCompleted while the detector thread runs, then stops the
+     * detector and waits for it.
+     */
+    private suspend fun runTornWriteRace(reader: Thread, stop: AtomicBoolean) {
+        val start = CompletableDeferred<Unit>()
+        val writers =
+            (0 until 24).map { i ->
+                async {
+                    start.await()
+                    if (i % 2 == 0) {
+                        UserDataStorage.saveUserData(if (i % 4 == 0) user1 else user2)
+                    } else {
+                        UserDataStorage.setPluginWizardCompleted(i % 3 == 0)
+                    }
+                }
+            }
+        start.complete(Unit)
+        writers.awaitAll()
+        stop.set(true)
+        reader.join(5_000L)
+    }
+
     @Test
     fun `readers never observe a torn record while writers race`() =
         runBlocking(Dispatchers.Default) {
@@ -337,49 +390,12 @@ class UserDataStorageMergeTest {
                 thread(isDaemon = true, name = "user-data-torn-read-detector") {
                     while (!stop.get()) {
                         Thread.onSpinWait()
-                        val snapshot = UserDataStorage.storageFile
-                        if (!snapshot.exists()) continue
-                        try {
-                            json.decodeFromString(
-                                UserDataStorage.StoredUserData.serializer(),
-                                snapshot.readText(),
-                            )
-                            successfulDecodes.incrementAndGet()
-                        } catch (e: SerializationException) {
-                            torn.add("a reader saw a record it could not decode: " + e.message)
-                        } catch (_: IOException) {
-                            // A transient refusal to open the file while the atomic replace
-                            // lands (e.g. a Windows sharing violation): no content was
-                            // observed, so it is not a torn record - just read again.
-                            continue
-                        } catch (t: Throwable) {
-                            // Anything else (NPE, OOM) kills the detector; record it
-                            // instead of reading as "no torn records".
-                            detectorFailures.add(t.toString())
-                            break
-                        }
+                        runTornReadIteration(torn, detectorFailures, successfulDecodes)
+                        if (detectorFailures.isNotEmpty()) break
                     }
                 }
 
-            try {
-                val start = CompletableDeferred<Unit>()
-                val writers =
-                    (0 until 24).map { i ->
-                        async {
-                            start.await()
-                            if (i % 2 == 0) {
-                                UserDataStorage.saveUserData(if (i % 4 == 0) user1 else user2)
-                            } else {
-                                UserDataStorage.setPluginWizardCompleted(i % 3 == 0)
-                            }
-                        }
-                    }
-                start.complete(Unit)
-                writers.awaitAll()
-            } finally {
-                stop.set(true)
-                reader.join(5_000L)
-            }
+            runTornWriteRace(reader, stop)
 
             assertTrue(
                 detectorFailures.isEmpty(),
