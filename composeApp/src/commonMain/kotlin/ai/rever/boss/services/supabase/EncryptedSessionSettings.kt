@@ -127,35 +127,36 @@ internal class EncryptedSessionSettings(
         legacyNames: List<String>,
     ): Boolean {
         val populated = legacyNames.filter { legacyStore.get(it, null) != null }
-        if (populated.isEmpty()) return true
         // legacySettingsKeyNames lists the URL-qualified key first: that is the shape the
         // supabase-kt defaults write, so it wins over a stale bare-key leftover.
-        val legacyValue = legacyStore.get(populated.first(), null) ?: return true
-        try {
+        val legacyValue = if (populated.isEmpty()) null else legacyStore.get(populated.first(), null)
+        if (legacyValue == null) return true
+        return try {
             if (getStringOrNull(canonicalName) == null) {
                 putString(canonicalName, legacyValue)
             }
-            for (name in populated) {
-                legacyStore.remove(name)
-            }
+            populated.forEach { name -> legacyStore.remove(name) }
+            true
         } catch (e: IllegalStateException) {
             // The encrypted store refused the write (fail-closed); keep the plaintext
             // copy so the user is logged out only if this failure is permanent.
-            logger.warn(
-                LogCategory.AUTH,
-                "Keeping the legacy session for the next start after the encrypted copy failed",
-                mapOf("key" to canonicalName, "reason" to e::class.simpleName),
-            )
-            return false
+            warnLegacySessionKept(canonicalName, e)
+            false
         } catch (e: IOException) {
-            logger.warn(
-                LogCategory.AUTH,
-                "Keeping the legacy session for the next start after the encrypted copy could not be written",
-                mapOf("key" to canonicalName, "reason" to e::class.simpleName),
-            )
-            return false
+            warnLegacySessionKept(canonicalName, e)
+            false
         }
-        return true
+    }
+
+    private fun warnLegacySessionKept(
+        canonicalName: String,
+        failure: Exception,
+    ) {
+        logger.warn(
+            LogCategory.AUTH,
+            "Keeping the legacy session for the next start after the encrypted copy failed",
+            mapOf("key" to canonicalName, "reason" to failure::class.simpleName),
+        )
     }
 
     /**
