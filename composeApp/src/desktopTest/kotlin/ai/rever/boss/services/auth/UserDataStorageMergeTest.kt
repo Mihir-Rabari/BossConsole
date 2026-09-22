@@ -11,11 +11,13 @@ import kotlinx.serialization.SerializationException
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CopyOnWriteArraySet
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
-import kotlin.concurrent.thread
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -321,31 +323,31 @@ class UserDataStorageMergeTest {
 
     /**
      * One iteration of the torn-read detector: decode whatever is currently on
-     * disk and record the outcome into [torn] / [detectorFailures] /
-     * [successfulDecodes]. A transient refusal to open the file while the
-     * atomic replace lands (e.g. a Windows sharing violation) observes no
-     * content, so it is not a torn record - just read again.
+     * disk and record the observed form into [decodedForms]. Returns true when
+     * content was observed (a whole record or a torn one). A transient refusal
+     * to open the file while the atomic replace lands (e.g. a Windows sharing
+     * violation) observes no content, so it is not a torn record - just read
+     * again.
      */
     private fun runTornReadIteration(
         torn: CopyOnWriteArrayList<String>,
-        detectorFailures: CopyOnWriteArrayList<String>,
-        successfulDecodes: AtomicInteger,
-    ) {
+        decodedForms: CopyOnWriteArraySet<String>,
+    ): Boolean {
         val snapshot = UserDataStorage.storageFile
-        if (!snapshot.exists()) return
-        try {
-            json.decodeFromString(
-                UserDataStorage.StoredUserData.serializer(),
-                snapshot.readText(),
-            )
-            successfulDecodes.incrementAndGet()
+        if (!snapshot.exists()) return false
+        return try {
+            val stored =
+                json.decodeFromString(UserDataStorage.StoredUserData.serializer(), snapshot.readText())
+            decodedForms.add("${stored.email}#${stored.pluginWizardCompleted}")
+            true
         } catch (e: SerializationException) {
             torn.add("a reader saw a record it could not decode: " + e.message)
-        } catch (@Suppress("TooGenericExceptionCaught") t: Throwable) {
-            // A torn record is a decode failure; anything else (NPE, OOM)
-            // kills the detector, which would read as "no torn records" if
-            // not recorded.
-            detectorFailures.add(t.toString())
+            true
+        } catch (e: IOException) {
+            // A transient refusal to open the file while the atomic replace
+            // lands (e.g. a Windows sharing violation): no content was
+            // observed, so it is not a torn record - just read again.
+            false
         }
     }
 
@@ -354,7 +356,19 @@ class UserDataStorageMergeTest {
      * setPluginWizardCompleted while the detector thread runs, then stops the
      * detector and waits for it.
      */
-    private suspend fun runTornWriteRace(reader: Thread, stop: AtomicBoolean) {
+    private suspend fun runTornWriteRace(
+        reader: Thread,
+        stop: AtomicBoolean,
+        firstContent: CountDownLatch,
+    ) {
+        // The detector proves it read the record from disk before the writers
+        // are released, so reader/writer overlap is a guarantee rather than a
+        // scheduling hope: a detector that was only scheduled after the race
+        // would fail this await, not the assertions that follow.
+        assertTrue(
+            firstContent.await(10, TimeUnit.SECONDS),
+            "the torn-read detector never read the record from disk",
+        )
         val start = CompletableDeferred<Unit>()
         val writers =
             (0 until 24).map { i ->
@@ -385,34 +399,33 @@ class UserDataStorageMergeTest {
             // A detector that dies on an unexpected error (or never decodes a
             // record at all) would let this test pass while proving nothing.
             val detectorFailures = CopyOnWriteArrayList<String>()
-            val successfulDecodes = AtomicInteger()
-            val reader =
-                thread(isDaemon = true, name = "user-data-torn-read-detector") {
-                    while (!stop.get()) {
-                        Thread.onSpinWait()
-                        runTornReadIteration(torn, detectorFailures, successfulDecodes)
-                        if (detectorFailures.isNotEmpty()) break
-                    }
-                }
+            // The distinct (email, wizard) forms the detector actually read off
+            // disk; the seed alone would mean no racing write ever landed.
+            val decodedForms = CopyOnWriteArraySet<String>()
+            // Counted down on the first content read, so the writers are only
+            // released once the detector is provably inside its read loop.
+            val firstContent = CountDownLatch(1)
+            val reader = startTornReadDetector(stop, torn, detectorFailures, decodedForms, firstContent)
 
-            runTornWriteRace(reader, stop)
+            runTornWriteRace(reader, stop, firstContent)
 
-            assertTrue(
-                detectorFailures.isEmpty(),
-                "the torn-read detector itself failed; the race is inconclusive: $detectorFailures",
-            )
-            assertTrue(
-                successfulDecodes.get() > 0,
-                "the detector never decoded a whole record, so it did not overlap the writers",
-            )
-            assertFalse(
-                reader.isAlive,
-                "the detector must stop when asked - a wedged detector is inconclusive",
-            )
+            // The contract first: the atomic temp+move must expose only whole
+            // records. The inconclusiveness guards follow, so a real torn read
+            // is never buried under a detector-health failure message.
             assertTrue(
                 torn.isEmpty(),
                 "the atomic temp+move must expose only whole records to readers: $torn",
             )
+            assertTrue(
+                decodedForms.size > 1,
+                "the detector saw only the seed record: no racing write ever landed on disk, " +
+                    "so the race exercised nothing (e.g. every atomic move failed on this platform)",
+            )
+            assertTrue(
+                detectorFailures.isEmpty(),
+                "the torn-read detector itself failed; the race is inconclusive: $detectorFailures",
+            )
+            assertFalse(reader.isAlive, "the detector must stop when asked - a wedged detector is inconclusive")
             val stored = storedRecord()
             assertTrue(
                 stored.email == user1.email || stored.email == user2.email,
@@ -423,6 +436,39 @@ class UserDataStorageMergeTest {
                 workDirFileNames(),
                 "no atomic-write temp file may outlive the race",
             )
+        }
+
+    /**
+     * The detector thread: a hot decode loop that records the forms it
+     * observes. Anything the loop does not catch itself (NPE, OOM, ...) kills
+     * the thread; the uncaught-exception handler records that instead of
+     * reading as "no torn records".
+     */
+    private fun startTornReadDetector(
+        stop: AtomicBoolean,
+        torn: CopyOnWriteArrayList<String>,
+        detectorFailures: CopyOnWriteArrayList<String>,
+        decodedForms: CopyOnWriteArraySet<String>,
+        firstContent: CountDownLatch,
+    ): Thread =
+        Thread(
+            {
+                while (!stop.get()) {
+                    // onSpinWait is a pipeline hint (PAUSE on x86), not a
+                    // yield: the detector deliberately keeps spinning, pinning
+                    // a core, to maximise the chance of landing its read
+                    // between a writer's temp-write and move.
+                    Thread.onSpinWait()
+                    if (runTornReadIteration(torn, decodedForms)) firstContent.countDown()
+                }
+            },
+            "user-data-torn-read-detector",
+        ).apply {
+            isDaemon = true
+            uncaughtExceptionHandler =
+                Thread.UncaughtExceptionHandler { _, t -> detectorFailures.add(t.toString()) }
+        }.also {
+            it.start()
         }
 
     @Test
