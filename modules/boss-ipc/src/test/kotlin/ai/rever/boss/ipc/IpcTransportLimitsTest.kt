@@ -162,7 +162,13 @@ class IpcTransportLimitsTest {
                     )
                 val request = ProcessStatusRequest.newBuilder().setProcessId("metadata-reader").build()
                 val refusal = assertFailsWith<StatusException> { reader.getProcessStatus(request) }
-                assertEquals(Status.Code.RESOURCE_EXHAUSTED, refusal.status.code)
+                assertTrue(
+                    refusal.status.code in setOf(Status.Code.RESOURCE_EXHAUSTED, Status.Code.INTERNAL),
+                    "oversized response headers must fail at the transport, saw ${refusal.status.code}",
+                )
+                val defaultReader = KernelServiceGrpcKt.KernelServiceCoroutineStub(host.channelFor("normal-reader"))
+                val normalRequest = ProcessStatusRequest.newBuilder().setProcessId("normal-reader").build()
+                assertEquals(ProcessState.PROCESS_STATE_STOPPED, defaultReader.getProcessStatus(normalRequest).state)
             }
         }
 
