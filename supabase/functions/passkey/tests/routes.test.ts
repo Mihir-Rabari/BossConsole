@@ -488,12 +488,20 @@ Deno.test("POST /auth/challenge - the envelope hides a PGRST204 schema diagnosti
     const app = buildApp(mockClient)
     const response = await postJson(app, '/auth/challenge', { email: 'caller@example.com' })
 
-    assertEquals(response.status, 400)
+    // A store failure returns the same inert 200 shape as the pre-auth
+    // failures (unknown email, no passkeys) by design (BossConsole#768): a
+    // 400 here would let a prober tell an enrolled account apart the moment
+    // the store hiccups. What the unauthenticated caller may see is fixed
+    // text — never the driver's diagnostic.
+    assertEquals(response.status, 200)
     const body = await response.text()
-    assertEquals(JSON.parse(body).error, 'Failed to store challenge')
+    const parsed = JSON.parse(body)
+    assertEquals(parsed.success, true)
+    assertEquals(parsed.allowCredentials, [])
     assertEquals(body.includes(diagnostic), false, 'the schema diagnostic must not reach the response body')
     assertEquals(body.includes('PGRST204'), false)
     assertEquals(body.includes('passkey_challenges'), false)
+    assertEquals(body.includes('Failed to store challenge'), false, 'the fixed envelope is logged, not sent to the client')
   } finally {
     console.error = originalError
   }
@@ -503,5 +511,11 @@ Deno.test("POST /auth/challenge - the envelope hides a PGRST204 schema diagnosti
     logged.some((line) => line.includes(diagnostic)),
     true,
     'the PGRST204 detail must be logged server-side'
+  )
+  // storeChallenge's fixed envelope must land on the log instead of the wire.
+  assertEquals(
+    logged.some((line) => line.includes('Failed to store challenge')),
+    true,
+    'the fixed envelope must replace the raw error text in the result'
   )
 })
