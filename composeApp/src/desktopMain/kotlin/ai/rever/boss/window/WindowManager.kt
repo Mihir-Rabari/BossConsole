@@ -179,8 +179,20 @@ object WindowManager {
             // got to consume. A window closed before (or without) initializing would
             // otherwise strand its pending tab/project in these process-lifetime maps
             // forever, and nothing else bounds them (#1224).
-            pendingInitialTabs.remove(windowId)
-            pendingInitialProjects.remove(windowId)
+            pendingInitialTabs.remove(windowId)?.let {
+                logger.debug(
+                    LogCategory.UI,
+                    "Cleaned up unconsumed pending tab on window close",
+                    mapOf("tab" to it.title, "windowId" to windowId),
+                )
+            }
+            pendingInitialProjects.remove(windowId)?.let {
+                logger.debug(
+                    LogCategory.UI,
+                    "Cleaned up unconsumed pending project on window close",
+                    mapOf("project" to it.name, "windowId" to windowId),
+                )
+            }
             logger.debug(LogCategory.UI, "Closed window", mapOf("windowId" to windowId, "remainingWindows" to _windows.size))
         }
     }
