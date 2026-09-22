@@ -927,7 +927,9 @@ class DynamicPluginManager(
                             ),
                         )
                         return Result.failure(
-                            IllegalStateException("api jar $candidate cannot be verified; the API layer was not swapped"),
+                            IllegalStateException(
+                                "api jar $candidate cannot be verified; the API layer was not swapped",
+                            ),
                         )
                     }
                     logger.info(
