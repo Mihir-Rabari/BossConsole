@@ -737,7 +737,7 @@ object ChromiumAutoDownloader {
      *
      * Both paths are gated by [BoundedZipExtractor.verifyExtractableWithin] first: ditto
      * honours neither containment nor size caps of its own, so escaping entry names, symlink
-     * entries and the declared central directory are all checked before it runs; the Java
+     * targets and the declared central directory are all checked before it runs; the Java
      * path re-checks containment and the written bytes while extracting.
      */
     private fun extractZip(
@@ -745,10 +745,11 @@ object ChromiumAutoDownloader {
         targetDir: Path,
     ) {
         logger.debug(LogCategory.BROWSER, "Extracting Chromium", mapOf("targetDir" to targetDir.toString()))
-        BoundedZipExtractor.verifyExtractableWithin(zipPath, targetDir)
+        val isMac = System.getProperty("os.name").lowercase().contains("mac")
+        BoundedZipExtractor.verifyExtractableWithin(zipPath, targetDir, allowFrameworkSymlinks = isMac)
         Files.createDirectories(targetDir)
 
-        if (System.getProperty("os.name").lowercase().contains("mac")) {
+        if (isMac) {
             extractWithDitto(zipPath, targetDir)
         } else {
             extractWithJava(zipPath, targetDir)
@@ -759,6 +760,7 @@ object ChromiumAutoDownloader {
 
     /**
      * Extract using macOS native `ditto` which preserves symlinks and code signatures.
+     * A failed ditto run cannot safely fall back to Java, which cannot preserve framework links.
      */
     private fun extractWithDitto(
         zipPath: Path,
@@ -771,6 +773,11 @@ object ChromiumAutoDownloader {
         val output = process.inputStream.bufferedReader().readText()
         val exitCode = process.waitFor()
         if (exitCode != 0) {
+            logger.warn(
+                LogCategory.BROWSER,
+                "ditto extraction failed; refusing the Chromium archive",
+                mapOf("exitCode" to exitCode, "output" to output),
+            )
             throw IllegalStateException(
                 "ditto extraction failed (exitCode=$exitCode); refusing the Java fallback " +
                     "because it breaks macOS framework symlinks: $output",

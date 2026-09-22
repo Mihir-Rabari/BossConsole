@@ -124,16 +124,69 @@ internal object BoundedZipExtractor {
         zipPath: Path,
         rootDir: Path,
         limits: Limits = ENGINE_LIMITS,
+        allowFrameworkSymlinks: Boolean = false,
     ) {
         verifyDeclaredWithinLimits(zipPath, limits)
         val root = rootDir.toAbsolutePath().normalize()
         val symlinkNames = symlinkEntryNames(zipPath)
         ZipFile(zipPath.toFile()).use { zip ->
+            val links = mutableMapOf<Path, Path>()
+            if (allowFrameworkSymlinks) {
+                val entries = zip.entries()
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
+                    if (entry.name !in symlinkNames) continue
+                    if (!entry.name.contains(".framework/")) {
+                        throw SecurityException("Refusing non-framework symlink: ${entry.name}")
+                    }
+                    val linkPath = resolveEntryName(root, entry.name)
+                    val target = zip.getInputStream(entry).use { String(it.readNBytes(4_097), Charsets.UTF_8) }
+                    if (target.isEmpty() || target.length > 4_096 || '\u0000' in target || Path.of(target).isAbsolute) {
+                        throw SecurityException("Refusing unsafe symlink target: ${entry.name}")
+                    }
+                    val targetPath = linkPath.parent.resolve(target).normalize()
+                    if (!targetPath.startsWith(root)) {
+                        throw SecurityException("Symlink target escapes extraction root: ${entry.name}")
+                    }
+                    links[linkPath] = targetPath
+                }
+            }
             val entries = zip.entries()
             while (entries.hasMoreElements()) {
-                resolveWithin(root, entries.nextElement(), symlinkNames)
+                val entry = entries.nextElement()
+                if (!allowFrameworkSymlinks && entry.name in symlinkNames) {
+                    throw SecurityException("Refusing to extract symlink entry: ${entry.name}")
+                }
+                val path = resolveEntryName(root, entry.name)
+                resolveLinkPath(root, root.relativize(path), links)
             }
         }
+    }
+
+    private fun resolveEntryName(root: Path, name: String): Path {
+        if (name.split('/').any { it == ".." }) throw SecurityException("Zip entry contains parent traversal: $name")
+        val path = root.resolve(name).normalize()
+        if (!path.startsWith(root)) throw SecurityException("Zip entry outside target directory: $name")
+        return path
+    }
+
+    private fun resolveLinkPath(
+        root: Path,
+        relative: Path,
+        links: Map<Path, Path>,
+        depth: Int = 0,
+    ): Path {
+        if (depth > 40) throw SecurityException("Archive symlink cycle or chain is too long")
+        var current = root
+        for (part in relative) {
+            current = current.resolve(part).normalize()
+            if (!current.startsWith(root)) throw SecurityException("Archive path escapes extraction root")
+            val destination = links[current]
+            if (destination != null) {
+                current = resolveLinkPath(root, root.relativize(destination), links, depth + 1)
+            }
+        }
+        return current
     }
 
     /**

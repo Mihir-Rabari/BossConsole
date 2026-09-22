@@ -213,4 +213,30 @@ class BoundedZipExtractorTest {
             BoundedZipExtractor.verifyExtractableWithin(zip.toPath(), extractDir.toPath())
         }
     }
+
+    @Test
+    fun `the mac pre-scan permits an internal framework Versions Current link`() {
+        val zip =
+            ZipArchiveFixtures.symlinkModeEntry(
+                File(root, "framework-link.zip"),
+                "Chromium Framework.framework/Versions/Current",
+                "A",
+            )
+
+        BoundedZipExtractor.verifyExtractableWithin(zip.toPath(), extractDir.toPath(), allowFrameworkSymlinks = true)
+    }
+
+    @Test
+    fun `the mac pre-scan refuses a framework link escaping the extraction root`() {
+        val zip =
+            ZipArchiveFixtures.symlinkModeEntry(
+                File(root, "escaping-link.zip"),
+                "Chromium Framework.framework/Versions/Current",
+                "../../../../outside",
+            )
+
+        assertFailsWith<SecurityException> {
+            BoundedZipExtractor.verifyExtractableWithin(zip.toPath(), extractDir.toPath(), allowFrameworkSymlinks = true)
+        }
+    }
 }
