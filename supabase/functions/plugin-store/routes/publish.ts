@@ -32,6 +32,7 @@ import {
   computeRemoteSha256,
   isAllowedExternalJarUrl,
   JarTooLargeError,
+  PublishInputError,
 } from "../services/github.ts"
 import {
   registerDefinedPermissions,
@@ -531,10 +532,12 @@ publish.openapi(finalizeVersionRoute, async (ctx) => {
       observedBytes = hashed.totalBytes
     } catch (e) {
       console.error(`finalize hash recompute FAILED after ${Date.now() - hashStartMs}ms: version=${body.versionId}`, e)
-      return ctx.json({
-        success: false,
-        error: 'Failed to compute JAR hash'
-      }, 502)
+      // Curated publisher-facing input errors (bad asset, oversized JAR)
+      // are safe to echo verbatim; driver/network text stays behind the
+      // fixed envelope (issue #770).
+      const error = e instanceof PublishInputError ? e.message : 'Failed to compute JAR hash'
+      const status = e instanceof PublishInputError ? 400 : 502
+      return ctx.json({ success: false, error }, status)
     }
     // Telemetry for the re-stream cost: finalize latency scales with JAR
     // size (capped at MAX_HASHABLE_BYTES) — watch these lines in prod to see
@@ -568,10 +571,9 @@ publish.openapi(finalizeVersionRoute, async (ctx) => {
       }
     } catch (e) {
       console.error('Error reading JAR manifest for identity check:', e)
-      return ctx.json({
-        success: false,
-        error: 'Failed to read JAR manifest for identity check'
-      }, 502)
+      const error = e instanceof PublishInputError ? e.message : 'Failed to read JAR manifest for identity check'
+      const status = e instanceof PublishInputError ? 400 : 502
+      return ctx.json({ success: false, error }, status)
     }
 
     // Finalize version
@@ -1008,10 +1010,11 @@ publish.openapi(publishFromGitHubMetadataRoute, async (ctx) => {
       manifest = extracted.manifest
     } catch (e) {
       console.error('Error extracting manifest from JAR:', e)
-      return ctx.json({
-        success: false,
-        error: 'Failed to extract manifest from JAR'
-      }, 400)
+      // A curated "your asset is not a JAR" / "manifest missing or invalid"
+      // message is actionable for the publisher and stays; unexpected
+      // failure text does not.
+      const error = e instanceof PublishInputError ? e.message : 'Failed to extract manifest from JAR'
+      return ctx.json({ success: false, error }, 400)
     }
 
     // Compute the authoritative SHA-256 by streaming the remote JAR. This is
@@ -1026,10 +1029,9 @@ publish.openapi(publishFromGitHubMetadataRoute, async (ctx) => {
       totalBytes = hashed.totalBytes
     } catch (e) {
       console.error('Error computing JAR hash:', e)
-      return ctx.json({
-        success: false,
-        error: 'Failed to compute JAR hash'
-      }, 502)
+      const error = e instanceof PublishInputError ? e.message : 'Failed to compute JAR hash'
+      const status = e instanceof PublishInputError ? 400 : 502
+      return ctx.json({ success: false, error }, status)
     }
 
     if (body.sha256.toLowerCase() !== computedSha256) {

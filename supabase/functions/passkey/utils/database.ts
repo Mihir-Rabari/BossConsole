@@ -3,6 +3,15 @@ import { ChallengeType } from "../types/challenge.ts"
 import { normalizeBase64Url } from "./base64.ts"
 import { COSE_ALG_ES256 } from "./webauthn.ts"
 
+// SECURITY NOTE (issue #770 follow-up): several helpers below (claimStoredSession,
+// recordPasskeyUse, findPasskeyByCredentialId, findUserByEmail, getUserWithEmail,
+// cleanupExpiredChallenges) still return the driver's `error.message` as their
+// `.error` field. That is deliberate and safe only because no route surfaces those
+// specific strings to a response body today - callers log them or fold them into a
+// fixed message. If a new route starts echoing one of them, the PGRST204-class
+// diagnostics (column names, schema cache state) reach the caller again; convert it
+// to a fixed envelope first (see storeChallenge in challenge.ts for the pattern).
+
 /**
  * Normalises a PostgREST result that may be a single row or an array of rows.
  */

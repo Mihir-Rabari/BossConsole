@@ -394,7 +394,9 @@ export const completeAuthentication = withErrorHandler(
         // The challenge is already consumed at this point, so the client has to
         // start a new ceremony rather than retry this one. That is the safe
         // direction: never leave a used challenge live to keep a retry cheap.
-        console.error('❌ Failed to store completed authentication:', storeResult.error)
+        // The driver detail is already logged by storeCompletedAuthentication;
+        // storeResult.error is a fixed string by then.
+        console.error('❌ Failed to store completed authentication')
         return {
           success: false,
           error: 'Failed to store authentication result'

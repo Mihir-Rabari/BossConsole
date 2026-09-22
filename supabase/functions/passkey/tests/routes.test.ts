@@ -197,6 +197,53 @@ Deno.test("POST /register/challenge - rejects an unrecognised token", async () =
   )
 })
 
+Deno.test("POST /register/challenge - the envelope hides a PGRST204 schema diagnostic", async () => {
+  const mockClient = createMockSupabaseClient()
+  mockClient.mockAccessToken(ATTACKER_TOKEN, { id: ATTACKER_ID, email: 'attacker@example.com' })
+
+  // Unlike /auth/challenge (which returns an inert 200 on a store failure,
+  // BossConsole#768), /register/challenge puts the store result's error
+  // straight into a 400 body - this is the route where the PGRST204 text
+  // used to reach a caller (issue #770).
+  const diagnostic = 'column passkey_challenges.session_id does not exist'
+  mockClient.mockResponse('passkey_challenges', {
+    data: null,
+    error: {
+      code: 'PGRST204',
+      message: "Could not find the 'session_id' column of 'passkey_challenges' in the schema cache",
+      details: diagnostic,
+      hint: 'Reload the PostgREST schema cache'
+    }
+  }, 'insert')
+
+  const logged: string[] = []
+  const originalError = console.error
+  console.error = ((...args: unknown[]) => {
+    logged.push(args.map((arg) => Deno.inspect(arg)).join(' '))
+  }) as typeof console.error
+
+  try {
+    const app = buildApp(mockClient)
+    const response = await postJson(app, '/register/challenge', registrationChallengeBody(), ATTACKER_TOKEN)
+
+    assertEquals(response.status, 400)
+    const body = await response.text()
+    assertEquals(JSON.parse(body).error, 'Failed to store challenge')
+    assertEquals(body.includes(diagnostic), false, 'the schema diagnostic must not reach the response body')
+    assertEquals(body.includes('PGRST204'), false)
+    assertEquals(body.includes('passkey_challenges'), false)
+  } finally {
+    console.error = originalError
+  }
+
+  // The driver's text belongs on the server-side log, and must still be there.
+  assertEquals(
+    logged.some((line) => line.includes(diagnostic)),
+    true,
+    'the PGRST204 detail must be logged server-side'
+  )
+})
+
 Deno.test("POST /register/challenge - a token for one user cannot mint a challenge for another", async () => {
   const mockClient = createMockSupabaseClient()
   mockClient.mockAccessToken(ATTACKER_TOKEN, { id: ATTACKER_ID, email: 'attacker@example.com' })

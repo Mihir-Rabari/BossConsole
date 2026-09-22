@@ -114,12 +114,12 @@ export async function computeRemoteSha256(
     headers: { "User-Agent": "BOSS-Plugin-Store/1.0" },
   })
   if (!response.ok) {
-    throw new Error(
-      `Failed to fetch JAR for hashing: ${response.status} ${response.statusText}`
+    throw new PublishInputError(
+      `JAR download URL returned HTTP ${response.status} (asset missing or renamed?)`,
     )
   }
   if (!response.body) {
-    throw new Error("Remote JAR response has no body")
+    throw new PublishInputError("JAR download URL returned no body to hash")
   }
 
   const hash = createHash("sha256")
@@ -134,8 +134,8 @@ export async function computeRemoteSha256(
         if (totalBytes > MAX_HASHABLE_BYTES) {
           // Cancel so the remainder of the response isn't transferred.
           try { await reader.cancel() } catch { /* ignore */ }
-          throw new Error(
-            `Remote JAR exceeds ${MAX_HASHABLE_BYTES}-byte limit at ${totalBytes} bytes; refusing to hash`
+          throw new PublishInputError(
+            `JAR exceeds the ${MAX_HASHABLE_BYTES}-byte hash limit at ${totalBytes} bytes`,
           )
         }
         hash.update(value)
@@ -476,15 +476,15 @@ export async function extractManifestFromRemoteJar(
     headers: { "User-Agent": "BOSS-Plugin-Store/1.0" },
   })
   if (!headResp.ok) {
-    throw new Error(`HEAD request for JAR size failed: ${headResp.status}`)
+    throw new PublishInputError(`JAR download URL returned HTTP ${headResp.status} (asset missing or renamed?)`)
   }
   const contentLength = headResp.headers.get("Content-Length")
   if (!contentLength) {
-    throw new Error("Remote JAR response has no Content-Length header")
+    throw new PublishInputError("JAR download URL did not return a Content-Length header")
   }
   const totalSize = parseInt(contentLength, 10)
   if (!Number.isFinite(totalSize) || totalSize <= 0) {
-    throw new Error(`Invalid Content-Length from remote JAR: ${contentLength}`)
+    throw new PublishInputError(`JAR download URL reported an invalid size: ${contentLength}`)
   }
 
   // Step 2: explicit range for the tail.
@@ -498,7 +498,7 @@ export async function extractManifestFromRemoteJar(
   })
 
   if (tailResp.status !== 200 && tailResp.status !== 206) {
-    throw new Error(`Range request for EOCD failed: ${tailResp.status}`)
+    throw new PublishInputError(`JAR download URL does not support range requests (HTTP ${tailResp.status})`)
   }
 
   const tailData = new Uint8Array(await tailResp.arrayBuffer())
@@ -517,7 +517,7 @@ export async function extractManifestFromRemoteJar(
   }
 
   if (eocdPos === -1) {
-    throw new Error("Cannot find EOCD in JAR (range request)")
+    throw new PublishInputError("Release asset is not a JAR/ZIP archive (end-of-central-directory not found)")
   }
 
   let cdSize: number = tailView.getUint32(eocdPos + 12, true)
@@ -703,13 +703,21 @@ export async function extractManifestFromRemoteJar(
       throw new Error(`Unsupported compression: ${compressionMethod}`)
     }
 
-    const manifest = JSON.parse(content) as PluginManifest
-    validateManifest(manifest)
+    let manifest: PluginManifest
+    try {
+      manifest = JSON.parse(content) as PluginManifest
+      validateManifest(manifest)
+    } catch (e) {
+      if (e instanceof PublishInputError) throw e
+      throw new PublishInputError(
+        `JAR manifest (plugin.json) is unreadable: ${e instanceof Error ? e.message : String(e)}`,
+      )
+    }
     return { manifest, totalSize }
   }
 
-  throw new Error(
-    `Plugin manifest not found at ${manifestPath}. Make sure your plugin JAR contains a valid plugin.json.`
+  throw new PublishInputError(
+    `Plugin manifest not found at ${manifestPath}. Make sure your plugin JAR contains a valid plugin.json.`,
   )
 }
 
@@ -735,10 +743,10 @@ export async function extractManifestFromJar(jarData: ArrayBuffer): Promise<Plug
     validateManifest(manifest)
     return manifest
   } catch (e) {
-    if (e instanceof Error && e.message.startsWith("Invalid plugin manifest")) {
+    if (e instanceof PublishInputError) {
       throw e
     }
-    throw new Error(`Failed to parse plugin.json: ${(e as Error).message}`)
+    throw new PublishInputError(`Failed to parse plugin.json: ${e instanceof Error ? e.message : String(e)}`)
   }
 }
 
@@ -952,7 +960,7 @@ function validateManifest(manifest: PluginManifest): void {
   }
 
   if (errors.length > 0) {
-    throw new Error(`Invalid plugin manifest: ${errors.join("; ")}`)
+    throw new PublishInputError(`Invalid plugin manifest: ${errors.join("; ")}`)
   }
 }
 
@@ -963,6 +971,21 @@ export async function calculateSha256(data: ArrayBuffer): Promise<string> {
   const hashBuffer = await crypto.subtle.digest("SHA-256", data)
   const hashArray = Array.from(new Uint8Array(hashBuffer))
   return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("")
+}
+
+/**
+ * Marks a message written for a publisher to read — a deliberate, curated
+ * diagnostic (bad asset, malformed manifest, missing header), not driver or
+ * network error text. The publish routes surface `message` for this class
+ * and nothing else: it is the same rule as `JarTooLargeError` at the GitHub
+ * publish handler, generalized so a fixed envelope (issue #770) never
+ * strips the only hint a caller has to fix their input.
+ */
+export class PublishInputError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "PublishInputError"
+  }
 }
 
 /**
