@@ -19,6 +19,7 @@ import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.LockSupport
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -43,8 +44,10 @@ import kotlin.test.assertTrue
  * 4. Torn-write protection on the save path: the atomic temp+move must never expose a
  *    half-written record to a reader and must never leak its temp file.
  *
- * The race tests assert invariants that hold for EVERY serialization the mutex permits, so they
- * cannot flake on coroutine scheduling: they fail only if the mutual exclusion itself breaks.
+ * The mutex-based race tests (2 and 3) assert invariants that hold for EVERY serialization the
+ * mutex permits, so they cannot flake on coroutine scheduling: they fail only if the mutual
+ * exclusion itself breaks. The torn-write test (4) is different - it observes what a concurrent
+ * reader actually decodes, so it is best-effort across the CI matrix (see the detector below).
  *
  * Hermetic exactly like [UserDataStorageWizardTest]: both files are redirected into a temp dir
  * by [UserDataStorage.resetForTesting] and pointed back at [BossDirectories.rootDir] in
@@ -360,11 +363,7 @@ class UserDataStorageMergeTest {
      * setPluginWizardCompleted while the detector thread runs, then stops the
      * detector and waits for it.
      */
-    private suspend fun runTornWriteRace(
-        reader: Thread,
-        stop: AtomicBoolean,
-        firstContent: CountDownLatch,
-    ) {
+    private suspend fun runTornWriteRace(firstContent: CountDownLatch) {
         // The detector proves it read the record from disk before the writers
         // are released, so reader/writer overlap is a guarantee rather than a
         // scheduling hope: a detector that was only scheduled after the race
@@ -392,8 +391,6 @@ class UserDataStorageMergeTest {
             start.complete(Unit)
             writers.awaitAll()
         }
-        stop.set(true)
-        reader.join(5_000L)
     }
 
     @Test
@@ -416,7 +413,16 @@ class UserDataStorageMergeTest {
             val firstContent = CountDownLatch(1)
             val reader = startTornReadDetector(stop, torn, detectorFailures, decodedForms, firstContent)
 
-            runTornWriteRace(reader, stop, firstContent)
+            try {
+                runTornWriteRace(firstContent)
+            } finally {
+                // The detector is a hot-loop daemon thread: stop and join it even
+                // if the latch await fails or a writer throws, or it would keep
+                // spinning (re-reading storageFile) for the whole life of the
+                // shared test-worker JVM, burning a core under every later class.
+                stop.set(true)
+                reader.join(5_000L)
+            }
 
             // The contract first: the atomic temp+move must expose only whole
             // records. The inconclusiveness guards follow, so a real torn read
@@ -425,14 +431,17 @@ class UserDataStorageMergeTest {
                 torn.isEmpty(),
                 "the atomic temp+move must expose only whole records to readers: $torn",
             )
+            // Detector health is a precondition for trusting the decodedForms
+            // count: a detector that died right after its first read would
+            // otherwise read as "no racing write ever landed".
+            assertTrue(
+                detectorFailures.isEmpty(),
+                "the torn-read detector itself failed; the race is inconclusive: $detectorFailures",
+            )
             assertTrue(
                 decodedForms.size > 1,
                 "the detector saw only the seed record: no racing write ever landed on disk, " +
                     "so the race exercised nothing (e.g. every atomic move failed on this platform)",
-            )
-            assertTrue(
-                detectorFailures.isEmpty(),
-                "the torn-read detector itself failed; the race is inconclusive: $detectorFailures",
             )
             assertFalse(reader.isAlive, "the detector must stop when asked - a wedged detector is inconclusive")
             val stored = storedRecord()
@@ -448,10 +457,10 @@ class UserDataStorageMergeTest {
         }
 
     /**
-     * The detector thread: a hot decode loop that records the forms it
-     * observes. Anything the loop does not catch itself (NPE, OOM, ...) kills
-     * the thread; the uncaught-exception handler records that instead of
-     * reading as "no torn records".
+     * The detector thread: a decode loop that samples the record on a duty
+     * cycle and records the forms it observes. Anything the loop does not catch
+     * itself (NPE, OOM, ...) kills the thread; the uncaught-exception handler
+     * records that instead of reading as "no torn records".
      */
     private fun startTornReadDetector(
         stop: AtomicBoolean,
@@ -463,11 +472,15 @@ class UserDataStorageMergeTest {
         Thread(
             {
                 while (!stop.get()) {
-                    // onSpinWait is a pipeline hint (PAUSE on x86), not a
-                    // yield: the detector deliberately keeps spinning, pinning
-                    // a core, to maximise the chance of landing its read
-                    // between a writer's temp-write and move.
-                    Thread.onSpinWait()
+                    // A duty cycle, not a pure spin: read, then yield ~0.1 ms.
+                    // A hot spin pins a core AND holds user_data.json open for
+                    // the whole race, which on Windows denies the writers'
+                    // Files.move(., REPLACE_EXISTING, ATOMIC_MOVE) delete access
+                    // to the destination - every write no-ops and the
+                    // non-vacuity assertion below fails misleadingly. Sampling
+                    // hundreds of times across a millisecond-scale race is more
+                    // than enough for a negative "no torn read" invariant.
+                    LockSupport.parkNanos(100_000)
                     if (runTornReadIteration(torn, decodedForms)) firstContent.countDown()
                 }
             },
