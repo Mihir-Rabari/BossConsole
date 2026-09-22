@@ -324,6 +324,21 @@ class McpRiskEvaluatorTest {
         assertTrue(mismatches.isEmpty(), "mutating catalog tools rated below HIGH: $mismatches")
     }
 
+    @Test
+    fun `no read-only evaluator tool is classified mutating by the catalog`() {
+        // The reverse of the sync pin above: the catalog's MUTATING_SUFFIXES
+        // grows by name pattern (and a read-only tool can be renamed), so a
+        // future _stop/_delete suffix or rename could make the catalog call a
+        // tool mutating while the evaluator rates it read-only LOW - a silent
+        // contradiction between the two classification points.
+        val contradictions =
+            readOnlyTools.filterTo(mutableSetOf()) { name ->
+                McpMutatingToolCatalog.isMutating(name, declaredReadOnly = true)
+            }
+
+        assertTrue(contradictions.isEmpty(), "catalog/evaluator read-only contradictions: $contradictions")
+    }
+
     // ---------------------------------------------------------------------
     // Prefix normalization
     // ---------------------------------------------------------------------
