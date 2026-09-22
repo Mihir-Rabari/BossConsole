@@ -34,8 +34,6 @@ class BrowserServiceImplTest {
         listOf(
             "http://a.example/",
             "https://b.example/p",
-            "file:///srv/site/x.html",
-            "ftp://c.example/f",
         )
 
     private fun navigateRequest(url: String): NavigateBrowserRequest =
@@ -134,6 +132,44 @@ class BrowserServiceImplTest {
     }
 
     @Test
+    fun `file and ftp urls are refused like javascript`() {
+        runBlocking {
+            for (url in listOf("file:///etc/passwd", "ftp://files.example/x")) {
+                val service = BrowserServiceImpl()
+                val response = service.navigate(navigateRequest(url))
+                assertFalse(response.success, url)
+                assertTrue(response.errorMessage.contains("not navigable"), url)
+            }
+        }
+    }
+
+    @Test
+    fun `a refusal message carries the scheme name and nothing else from the url`() {
+        runBlocking {
+            val service = BrowserServiceImpl()
+            val response = service.navigate(navigateRequest("javascript:alert(document.cookie)"))
+            assertFalse(response.success)
+            assertTrue(response.errorMessage.contains("javascript"), response.errorMessage)
+            assertFalse(
+                "alert(document.cookie)" in response.errorMessage,
+                "the payload must not reach the error message: ${response.errorMessage}",
+            )
+        }
+    }
+
+    @Test
+    fun `an overlong scheme is refused and capped in the message`() {
+        runBlocking {
+            val scheme = "x".repeat(200)
+            val service = BrowserServiceImpl()
+            val response = service.navigate(navigateRequest("$scheme:payload"))
+            assertFalse(response.success)
+            assertTrue(response.errorMessage.contains("'x"), response.errorMessage)
+            assertFalse("x".repeat(33) in response.errorMessage, "the echoed scheme is capped at 32: ${response.errorMessage}")
+        }
+    }
+
+    @Test
     fun `a refused navigate leaves the current page alone`() {
         runBlocking {
             val service = BrowserServiceImpl()
@@ -177,17 +213,23 @@ class BrowserServiceImplTest {
 
     /**
      * #911's leak is one missing call in an argument list, so the log wiring is pinned by a
-     * source check rather than review vigilance — the same reason composeApp's
+     * source check rather than review vigilance - the same reason composeApp's
      * BrowserUrlLogConventionTest scans its guarded files.
+     *
+     * It requires describeUri, not the weaker redactUrlUserInfo: the convention test was
+     * written specifically to reject sanitizers that leave the query and fragment (an
+     * OAuth code, a presigned signature) in the log, and describeUri is the one that
+     * drops them - plus the userinfo, for the `https:user:secret@host` shape that
+     * redactUrlUserInfo returns unchanged.
      */
     @Test
-    fun `every url logged by the service is redacted first`() {
+    fun `every url logged by the service goes through describeUri`() {
         val offenders =
             serviceSource()
                 .readText()
                 .lineSequence()
                 .filter { "logger." in it && "url={}" in it }
-                .filterNot { "LogSanitizer.redactUrlUserInfo(" in it }
+                .filterNot { "LogSanitizer.describeUri(" in it }
                 .toList()
         assertEquals(emptyList<String>(), offenders)
     }

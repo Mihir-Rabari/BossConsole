@@ -49,7 +49,7 @@ class BrowserServiceImpl : BrowserServiceGrpcKt.BrowserServiceCoroutineImplBase(
                 .build()
         }
 
-        logger.info("navigate: windowId={}, url={}", request.windowId, LogSanitizer.redactUrlUserInfo(url))
+        logger.info("navigate: windowId={}, url={}", request.windowId, LogSanitizer.describeUri(url))
 
         val prev = windowStates[request.windowId]
         val newState =
@@ -107,7 +107,7 @@ class BrowserServiceImpl : BrowserServiceGrpcKt.BrowserServiceCoroutineImplBase(
         }
 
     override suspend fun getFavicon(request: GetFaviconRequest): GetFaviconResponse {
-        logger.debug("getFavicon: url={}", LogSanitizer.redactUrlUserInfo(request.url))
+        logger.debug("getFavicon: url={}", LogSanitizer.describeUri(request.url))
         return GetFaviconResponse
             .newBuilder()
             .setFaviconBytes(ByteString.EMPTY)
@@ -161,8 +161,10 @@ class BrowserServiceImpl : BrowserServiceGrpcKt.BrowserServiceCoroutineImplBase(
         logger.debug("reload")
         val state = windowStates.values.firstOrNull() ?: return Empty.getDefaultInstance()
         // Nothing reports a load finishing back to this service, so reload keeps the same
-        // synchronous STARTED -> COMPLETED pair navigate has. Leaving isLoading=true on the
-        // slot instead wedged getPageInfo at "loading" forever (#911).
+        // synchronous STARTED -> COMPLETED pair navigate has. The isLoading=false write
+        // is an explicit invariant: nothing in this file sets it true, and the old
+        // reload set it true with no completion ever flipping it back, which wedged
+        // getPageInfo at "loading" forever (#911).
         windowStates[state.windowId] = state.copy(isLoading = false)
         val ts = System.currentTimeMillis()
         navigationEvents.tryEmit(
@@ -203,7 +205,10 @@ class BrowserServiceImpl : BrowserServiceGrpcKt.BrowserServiceCoroutineImplBase(
             if (scheme == null) {
                 "URL has no parsable scheme; $SCHEME_RULE"
             } else if (scheme !in NAVIGABLE_SCHEMES) {
-                "URL scheme '$scheme' is not navigable; $SCHEME_RULE"
+                // take(32): the scheme charset is validated, but its length is not,
+                // and the stated contract of this log line is "never the URL" -
+                // an attacker could otherwise put an arbitrarily long token there.
+                "URL scheme '${scheme.take(SCHEME_LOG_MAX_LEN)}' is not navigable; $SCHEME_RULE"
             } else {
                 null
             }
@@ -229,17 +234,24 @@ class BrowserServiceImpl : BrowserServiceGrpcKt.BrowserServiceCoroutineImplBase(
 
     private companion object {
         /**
-         * The only schemes a Navigate may carry (#911). `javascript:` executes script in
-         * the page's own context and `data:` smuggles a document the same way, so neither
-         * may ride the no-approval Navigate path; an allowlist also refuses every scheme
-         * nobody has classified yet.
+         * The only schemes a Navigate may carry (#911). http/https, matching the repo's
+         * existing URL policy for anything that opens in a browser tab (see
+         * composeApp's UrlOpenValidation, whose KDoc names the same exceptions):
+         * `javascript:` executes script in the page's own context, `data:` smuggles a
+         * document the same way, `file:` reads local files into a window (and on
+         * Windows `file://host/share` is an SMB fetch), and `ftp:` is dead - Chromium
+         * removed it in 88, so the engine would refuse it anyway. An allowlist also
+         * refuses every scheme nobody has classified yet.
          */
-        val NAVIGABLE_SCHEMES = setOf("http", "https", "file", "ftp")
+        val NAVIGABLE_SCHEMES = setOf("http", "https")
 
         /** RFC 3986 scheme: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ). */
         val SCHEME_SYNTAX = Regex("[a-zA-Z][a-zA-Z0-9+.-]*")
 
         /** The one clause every scheme refusal ends with, stating what Navigate does accept. */
-        const val SCHEME_RULE = "Navigate accepts http, https, file and ftp URLs"
+        const val SCHEME_RULE = "Navigate accepts http and https URLs"
+
+        /** Refusals log the scheme, not the URL; cap the echoed length regardless. */
+        const val SCHEME_LOG_MAX_LEN = 32
     }
 }
