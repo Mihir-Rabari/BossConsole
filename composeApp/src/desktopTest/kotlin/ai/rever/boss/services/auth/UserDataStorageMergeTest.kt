@@ -15,6 +15,7 @@ import java.io.IOException
 import java.nio.file.Files
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -263,8 +264,10 @@ class UserDataStorageMergeTest {
     fun `saves racing the wizard completion never lose the completed flag`() =
         runBlocking(Dispatchers.Default) {
             repeat(20) { round ->
-                // Blank slate each round so the marker path (record absent) and the in-record
-                // path (record present) both get exercised across the rounds' interleavings.
+                // Blank slate each round so both the marker path (record absent) and the
+                // in-record path (record present) stay reachable; which one a given
+                // interleaving takes is the scheduler's to choose, so this round only asserts
+                // the serialization-independent invariants below.
                 UserDataStorage.storageFile.delete()
                 UserDataStorage.pendingWizardCompletedFile.delete()
 
@@ -326,24 +329,34 @@ class UserDataStorageMergeTest {
 
             val stop = AtomicBoolean(false)
             val torn = CopyOnWriteArrayList<String>()
+            // A detector that dies on an unexpected error (or never decodes a
+            // record at all) would let this test pass while proving nothing.
+            val detectorFailures = CopyOnWriteArrayList<String>()
+            val successfulDecodes = AtomicInteger()
             val reader =
                 thread(isDaemon = true, name = "user-data-torn-read-detector") {
                     while (!stop.get()) {
+                        Thread.onSpinWait()
                         val snapshot = UserDataStorage.storageFile
-                        if (snapshot.exists()) {
-                            try {
-                                json.decodeFromString(
-                                    UserDataStorage.StoredUserData.serializer(),
-                                    snapshot.readText(),
-                                )
-                            } catch (e: SerializationException) {
-                                torn.add("a reader saw a record it could not decode: " + e.message)
-                            } catch (_: IOException) {
-                                // A transient refusal to open the file while the atomic replace
-                                // lands (e.g. a Windows sharing violation): no content was
-                                // observed, so it is not a torn record - just read again.
-                                continue
-                            }
+                        if (!snapshot.exists()) continue
+                        try {
+                            json.decodeFromString(
+                                UserDataStorage.StoredUserData.serializer(),
+                                snapshot.readText(),
+                            )
+                            successfulDecodes.incrementAndGet()
+                        } catch (e: SerializationException) {
+                            torn.add("a reader saw a record it could not decode: " + e.message)
+                        } catch (_: IOException) {
+                            // A transient refusal to open the file while the atomic replace
+                            // lands (e.g. a Windows sharing violation): no content was
+                            // observed, so it is not a torn record - just read again.
+                            continue
+                        } catch (t: Throwable) {
+                            // Anything else (NPE, OOM) kills the detector; record it
+                            // instead of reading as "no torn records".
+                            detectorFailures.add(t.toString())
+                            break
                         }
                     }
                 }
@@ -368,6 +381,18 @@ class UserDataStorageMergeTest {
                 reader.join(5_000L)
             }
 
+            assertTrue(
+                detectorFailures.isEmpty(),
+                "the torn-read detector itself failed; the race is inconclusive: $detectorFailures",
+            )
+            assertTrue(
+                successfulDecodes.get() > 0,
+                "the detector never decoded a whole record, so it did not overlap the writers",
+            )
+            assertFalse(
+                reader.isAlive,
+                "the detector must stop when asked - a wedged detector is inconclusive",
+            )
             assertTrue(
                 torn.isEmpty(),
                 "the atomic temp+move must expose only whole records to readers: $torn",
