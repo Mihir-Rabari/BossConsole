@@ -445,7 +445,10 @@ object UpdateInstaller {
      * @param downloadPath Path to the downloaded update file
      * @return InstallResult indicating success, restart required, or error
      */
-    suspend fun installUpdate(downloadPath: String): InstallResult {
+    suspend fun installUpdate(
+        downloadPath: String,
+        stagingDir: File = defaultStagingDir(),
+    ): InstallResult {
         return try {
             val downloadFile = File(downloadPath)
 
@@ -460,6 +463,9 @@ object UpdateInstaller {
                 logger.error(LogCategory.SYSTEM, "Update file not found", mapOf("path" to downloadPath))
                 return InstallResult.Error("Update file not found")
             }
+
+            // Containment must precede reading the marker or hashing the artifact.
+            validateDownloadFile(downloadFile, ".${downloadFile.extension}", stagingDir)
 
             // Verify this is not a downgrade (Issue #111 fix)
             if (!verifyNoDowngrade(downloadFile)) {

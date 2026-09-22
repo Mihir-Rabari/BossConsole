@@ -63,6 +63,7 @@ actual class UpdateService internal constructor(
      * [UpdateInstaller].validateDownloadFile.
      */
     private val stagingDir: File = defaultStagingDir(),
+    private val bindVerifiedChecksum: (File, String) -> Unit = UpdateArtifactIntegrityVet::bindVerifiedChecksum,
 ) {
     /**
      * Matches the common `expect class UpdateService()` shape (expect/actual
@@ -374,7 +375,14 @@ actual class UpdateService internal constructor(
         try {
             val verifiedSha = requireCatalogChecksum(partFile, assetName, sha256)
             publishAtomically(partFile, downloadFile, assetName)
-            UpdateArtifactIntegrityVet.bindVerifiedChecksum(downloadFile, verifiedSha)
+            try {
+                bindVerifiedChecksum(downloadFile, verifiedSha)
+            } catch (e: Exception) {
+                val sidecar = UpdateArtifactIntegrityVet.checksumSidecarOf(downloadFile)
+                if (sidecar.exists()) deleteOrComplain(sidecar, "a failed checksum marker")
+                deleteOrComplain(downloadFile, "an unbound update download")
+                throw SecurityException("Could not bind the verified checksum for $assetName", e)
+            }
             logger.info(LogCategory.SYSTEM, "Update checksum verified", mapOf("asset" to assetName))
             logger.info(LogCategory.SYSTEM, "Update downloaded successfully", mapOf("path" to downloadFile.absolutePath))
             downloadFile.absolutePath

@@ -148,7 +148,7 @@ class UpdateArtifactIntegrityVetTest {
         val tampered = "swapped after verification".toByteArray()
         artifact.writeBytes(tampered)
 
-        val result = runBlocking { UpdateInstaller.installUpdate(artifact.absolutePath) }
+        val result = runBlocking { UpdateInstaller.installUpdate(artifact.absolutePath, stagingDir()) }
 
         assertTrue(result is InstallResult.Error, "a tampered artifact must not install, got: $result")
         val refusal = result as InstallResult.Error
@@ -165,7 +165,7 @@ class UpdateArtifactIntegrityVetTest {
     fun `the install boundary refuses an artifact nobody vouched for`() {
         val artifact = stagedArtifact()
 
-        val result = runBlocking { UpdateInstaller.installUpdate(artifact.absolutePath) }
+        val result = runBlocking { UpdateInstaller.installUpdate(artifact.absolutePath, stagingDir()) }
 
         assertTrue(result is InstallResult.Error, "an unverified artifact must not install, got: $result")
         val refusal = result as InstallResult.Error
@@ -180,6 +180,44 @@ class UpdateArtifactIntegrityVetTest {
     }
 
     // ==================== The download gate ====================
+
+    @Test
+    fun `a marker binding failure removes the published artifact and partial marker`() {
+        serveAsset()
+        val assetName = "BOSS-999.0.0-Universal.dmg"
+        val service =
+            UpdateService(
+                GitHubUpdateSource(),
+                stagingDir(),
+                bindVerifiedChecksum = { artifact, _ ->
+                    UpdateArtifactIntegrityVet.checksumSidecarOf(artifact).writeText("partial")
+                    throw SecurityException("simulated marker write failure")
+                },
+            )
+
+        val path =
+            runBlocking {
+                service.downloadFrom(url(), assetName, servedBytes.size.toLong(), sha256OfBytes(servedBytes)) {}
+            }
+
+        assertNull(path)
+        val artifact = File(stagingDir(), assetName)
+        assertTrue(!artifact.exists(), "a published artifact without a marker must be discarded")
+        assertTrue(!UpdateArtifactIntegrityVet.checksumSidecarOf(artifact).exists())
+    }
+
+    @Test
+    fun `an outside artifact with a valid marker is rejected before integrity vetting`() {
+        stagingDir().mkdirs()
+        val outside = File(tempDir.toFile(), "BOSS-999.0.0-amd64.jar").also { it.writeBytes(servedBytes) }
+        UpdateArtifactIntegrityVet.bindVerifiedChecksum(outside, sha256Of(outside))
+
+        val result = runBlocking { UpdateInstaller.installUpdate(outside.absolutePath, stagingDir()) }
+
+        assertTrue(result is InstallResult.Error)
+        assertTrue((result as InstallResult.Error).message.contains("outside the staging directory"))
+        assertTrue(outside.exists())
+    }
 
     @Test
     fun `a hash-less manifest is refused rather than staged unverified`() {
