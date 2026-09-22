@@ -1,9 +1,9 @@
 package ai.rever.boss.components.dialogs
 
 import ai.rever.boss.mcp.McpFlightPlanInput
-import ai.rever.boss.mcp.mcpPolicyFaultBlocksInvocation
 import ai.rever.boss.mcp.McpToolRegistryImpl
 import ai.rever.boss.mcp.mcpFlightPlan
+import ai.rever.boss.mcp.mcpPolicyFaultBlocksInvocation
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue

@@ -583,13 +583,6 @@ private fun McpActivityStatusItem() {
     }
 }
 
-internal fun mcpActivityStatusShouldRender(
-    hasRecentOperations: Boolean,
-    hasRegisteredTools: Boolean,
-    showActivityLog: Boolean,
-    showFlightPlan: Boolean,
-): Boolean = hasRecentOperations || hasRegisteredTools || showActivityLog || showFlightPlan
-
 /**
  * A clickable bottom-bar item sized to the bar: 11sp text, a 13dp icon and 2dp of vertical
  * padding, so it fits even the compact 24dp bar. Material's `TextButton` is not usable here - it
