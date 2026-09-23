@@ -247,6 +247,11 @@ internal object PasskeyAuthService {
             }
 
             return sessionResult
+        } catch (e: CancellationException) {
+            // A superseded attempt must die here, not report failure: the ViewModel's
+            // single-producer invariant depends on cancellation propagating instead of
+            // resurfacing as an ordinary auth failure that stomps the newer attempt's state.
+            throw e
         } catch (e: Exception) {
             logger.error(LogCategory.PASSKEY, "Passkey authentication failed", error = e)
             Result.failure(e)
