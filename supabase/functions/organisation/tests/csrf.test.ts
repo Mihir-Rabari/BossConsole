@@ -31,6 +31,7 @@ Deno.test("a well-formed same-origin post passes", () => {
       submitted: "nonce-a",
       secFetchSite: "same-origin",
       secFetchMode: "navigate",
+      secFetchDest: "document",
       origin: ORIGIN,
       expectedOrigin: ORIGIN,
     }),
@@ -47,6 +48,7 @@ Deno.test("a token from another session is refused", () => {
       submitted: "nonce-b",
       secFetchSite: "same-origin",
       secFetchMode: "navigate",
+      secFetchDest: "document",
       origin: ORIGIN,
       expectedOrigin: ORIGIN,
     }),
@@ -62,6 +64,7 @@ Deno.test("a missing token is refused", () => {
         submitted,
         secFetchSite: "same-origin",
         secFetchMode: "navigate",
+        secFetchDest: "document",
         origin: ORIGIN,
         expectedOrigin: ORIGIN,
       }),
@@ -78,6 +81,7 @@ Deno.test("a cross-site post is refused before the token is even considered", ()
       submitted: "nonce-a",
       secFetchSite: "cross-site",
       secFetchMode: "navigate",
+      secFetchDest: "document",
       origin: "https://evil.example.com",
       expectedOrigin: ORIGIN,
     }),
@@ -95,6 +99,7 @@ Deno.test("a request with neither Sec-Fetch-Site nor Origin is refused", () => {
       submitted: "nonce-a",
       secFetchSite: null,
       secFetchMode: null,
+      secFetchDest: null,
       origin: null,
       expectedOrigin: ORIGIN,
     }),
@@ -113,6 +118,7 @@ Deno.test("a script-driven fetch with a HARVESTED valid nonce is refused", () =>
       submitted: "nonce-a",
       secFetchSite: "same-origin",
       secFetchMode: "cors",
+      secFetchDest: "document",
       origin: ORIGIN,
       expectedOrigin: ORIGIN,
     }),
@@ -127,6 +133,7 @@ Deno.test("a script-driven fetch with a HARVESTED valid nonce is refused", () =>
         submitted: "nonce-a",
         secFetchSite: "same-origin",
         secFetchMode: mode,
+        secFetchDest: "document",
         origin: ORIGIN,
         expectedOrigin: ORIGIN,
       }),
@@ -143,6 +150,7 @@ Deno.test("a real form post with Sec-Fetch-Mode: navigate and a valid nonce pass
       submitted: "nonce-a",
       secFetchSite: "same-origin",
       secFetchMode: "navigate",
+      secFetchDest: "document",
       origin: ORIGIN,
       expectedOrigin: ORIGIN,
     }),
@@ -156,6 +164,7 @@ Deno.test("a real form post with Sec-Fetch-Mode: navigate and a valid nonce pass
       submitted: "nonce-a",
       secFetchSite: "none",
       secFetchMode: "navigate",
+      secFetchDest: "document",
       origin: null,
       expectedOrigin: ORIGIN,
     }),
@@ -173,6 +182,7 @@ Deno.test("a client with no Sec-Fetch-Mode falls through to the nonce check alon
       submitted: "nonce-a",
       secFetchSite: "same-origin",
       secFetchMode: null,
+      secFetchDest: null,
       origin: ORIGIN,
       expectedOrigin: ORIGIN,
     }),
@@ -186,6 +196,7 @@ Deno.test("a client with no Sec-Fetch-Mode falls through to the nonce check alon
       submitted: "harvested-but-wrong",
       secFetchSite: "same-origin",
       secFetchMode: null,
+      secFetchDest: null,
       origin: ORIGIN,
       expectedOrigin: ORIGIN,
     }),
@@ -201,6 +212,7 @@ Deno.test("an invalid nonce is refused on every fetch-mode branch", () => {
         submitted: "harvested-but-wrong",
         secFetchSite: "same-origin",
         secFetchMode: mode,
+        secFetchDest: "document",
         origin: ORIGIN,
         expectedOrigin: ORIGIN,
       }),
@@ -213,6 +225,7 @@ Deno.test("an invalid nonce is refused on every fetch-mode branch", () => {
         submitted: "",
         secFetchSite: "same-origin",
         secFetchMode: mode,
+        secFetchDest: "document",
         origin: ORIGIN,
         expectedOrigin: ORIGIN,
       }),
@@ -245,4 +258,71 @@ Deno.test("the field name is stable", () => {
   // The view and the guard have to agree; a rename in one place only would
   // silently reject every post.
   assertEquals(CSRF_FIELD, "csrf_token")
+})
+
+Deno.test("a navigation hidden in an iframe is refused by the dest gate", () => {
+  // The bypass the mode check cannot see: page script builds a form, targets
+  // a hidden iframe and calls submit() - a real navigation, so mode honestly
+  // reports "navigate", but dest honestly reports "iframe", and a real form
+  // post is always top-level ("document").
+  assertEquals(
+    checkCsrf({
+      session: session(),
+      submitted: "nonce-a",
+      secFetchSite: "same-origin",
+      secFetchMode: "navigate",
+      secFetchDest: "iframe",
+      origin: ORIGIN,
+      expectedOrigin: ORIGIN,
+    }),
+    "bad_fetch_dest",
+  )
+})
+
+Deno.test("a top-level navigation with dest document passes the dest gate", () => {
+  assertEquals(
+    checkCsrf({
+      session: session(),
+      submitted: "nonce-a",
+      secFetchSite: "same-origin",
+      secFetchMode: "navigate",
+      secFetchDest: "document",
+      origin: ORIGIN,
+      expectedOrigin: ORIGIN,
+    }),
+    null,
+  )
+})
+
+Deno.test("an absent dest header falls through to the remaining checks", () => {
+  // Non-browser clients send no fetch metadata at all; they are judged by
+  // origin and token alone, exactly as before the gate existed.
+  assertEquals(
+    checkCsrf({
+      session: session(),
+      submitted: "nonce-a",
+      secFetchSite: "same-origin",
+      secFetchMode: null,
+      secFetchDest: null,
+      origin: ORIGIN,
+      expectedOrigin: ORIGIN,
+    }),
+    null,
+  )
+})
+
+Deno.test("dest does not rescue a script-driven fetch mode", () => {
+  // dest: document with mode: cors is still a fetch, not a navigation.
+  assertEquals(
+    checkCsrf({
+      session: session(),
+      submitted: "nonce-a",
+      secFetchSite: "same-origin",
+      secFetchMode: "cors",
+      secFetchDest: "document",
+      origin: ORIGIN,
+      expectedOrigin: ORIGIN,
+    }),
+    "bad_fetch_mode",
+  )
 })

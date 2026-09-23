@@ -21,12 +21,27 @@
  * session-matched nonce. The token check alone cannot tell that post from a
  * real form submission, so it is not, by itself, a same-origin defence.
  *
- * The second leg is the signal page script cannot produce: Sec-Fetch-Mode. It
- * is set by the browser and is a forbidden header for script to set. A real
- * form submission always arrives with Sec-Fetch-Mode: navigate; script-driven
- * requests never do (fetch()/XHR send "cors", "same-origin" or "no-cors"). A
- * mutating request whose Sec-Fetch-Mode is PRESENT and not "navigate" is
- * rejected as script-driven, whatever nonce it harvested.
+ * The second leg is the fetch-metadata signal page script cannot forge
+ * outright: Sec-Fetch-Mode and Sec-Fetch-Dest are set by the browser and are
+ * forbidden headers for script to set. A real form submission always arrives
+ * with Sec-Fetch-Mode: navigate and Sec-Fetch-Dest: document; fetch()/XHR /
+ * sendBeacon never send "navigate" (they send "cors", "same-origin" or
+ * "no-cors"). A mutating request whose Sec-Fetch-Mode is PRESENT and not
+ * "navigate" is rejected as script-driven, whatever nonce it harvested.
+ *
+ * That mode check does NOT stop every script-driven post: page script can
+ * also cause a NAVIGATION - build a form, target it at a hidden iframe and
+ * call submit() - and a navigation legitimately arrives with Sec-Fetch-Mode:
+ * navigate. That variant is caught by the second signal: a form pointed at a
+ * frame sends Sec-Fetch-Dest: iframe, not document, so a present Dest header
+ * that is not "document" is rejected too. What remains is a script forcing a
+ * VISIBLE top-level navigation (dest: document), which navigates the
+ * operator's own window - noisy, and the harvest-and-post loop cannot hide.
+ *
+ * These headers are defence in depth, not the durable fix: the hole closes
+ * when the nonce and third-party CDN script stop sharing an origin (no
+ * Swagger UI / third-party JS on the admin origin, and a CSP that stops the
+ * CDN script executing on these pages).
  *
  * When Sec-Fetch-Mode is ABSENT the request did not come from browser-driven
  * script (or is from a browser old enough not to ship the header): curl, CLI
@@ -49,6 +64,7 @@ export type CsrfFailure =
   | "bad_token"
   | "bad_origin"
   | "bad_fetch_mode"
+  | "bad_fetch_dest"
 
 /** Constant-time string comparison over UTF-8 bytes. */
 function timingSafeEqualStrings(a: string, b: string): boolean {
@@ -98,14 +114,19 @@ export function originIsSameSite(
  *
  * `secFetchMode` is the gate against same-origin script carrying a HARVESTED
  * valid nonce (see the file header). A browser form post always sends
- * "navigate"; fetch()/XHR never can. Absent means a non-browser client, and
- * such a request is judged by the remaining checks alone, exactly as before.
+ * "navigate"; fetch()/XHR/sendBeacon never can. Script can still submit a
+ * form programmatically - a navigation, which honestly reports "navigate" -
+ * so `secFetchDest` adds the second signal: a real form post targets the top
+ * level and sends "document", while a form hidden in an iframe sends
+ * "iframe". Absent means a non-browser client, and such a request is judged
+ * by the remaining checks alone, exactly as before.
  */
 export function checkCsrf(input: {
   session: SessionPayload
   submitted: unknown
   secFetchSite: string | null
   secFetchMode: string | null
+  secFetchDest: string | null
   origin: string | null
   expectedOrigin: string | null
 }): CsrfFailure | null {
@@ -119,6 +140,11 @@ export function checkCsrf(input: {
   // through on a token that happens to match.
   if (input.secFetchMode !== null && input.secFetchMode !== "navigate") {
     return "bad_fetch_mode"
+  }
+  // A form post is always a TOP-LEVEL navigation (dest "document"); script
+  // that hides its navigation in an iframe sends "iframe" and dies here.
+  if (input.secFetchDest !== null && input.secFetchDest !== "document") {
+    return "bad_fetch_dest"
   }
   if (typeof input.submitted !== "string" || input.submitted.length === 0) {
     return "missing_token"

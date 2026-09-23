@@ -947,6 +947,31 @@ Deno.test("a script-driven post with a HARVESTED valid nonce is refused", async 
   }
 })
 
+Deno.test("a harvested-nonce post hidden in an iframe is refused by the dest gate", async () => {
+  // The §1 bypass from the review: script on the same origin harvests the
+  // nonce, builds a form targeted at a hidden iframe and calls submit() - a
+  // genuine navigation, so Sec-Fetch-Mode: navigate honestly, but
+  // Sec-Fetch-Dest: iframe gives it away.
+  const { stub, restore } = setup()
+  try {
+    const headers = formHeaders(await sessionCookie())
+    headers.set("sec-fetch-mode", "navigate")
+    headers.set("sec-fetch-dest", "iframe")
+
+    const before = stub.calls.length
+    const response = await app.request(`${BASE}/o/${FIXTURE.slug}/admin/settings`, {
+      method: "POST",
+      headers,
+      body: new URLSearchParams({ [CSRF_FIELD]: CSRF, name: "Pwned" }),
+    })
+
+    assertEquals(response.status, 403)
+    assertEquals(stub.calls.length, before)
+  } finally {
+    restore()
+  }
+})
+
 Deno.test("a real form post with Sec-Fetch-Mode: navigate and a valid nonce is accepted", async () => {
   const { stub, restore } = setup()
   try {

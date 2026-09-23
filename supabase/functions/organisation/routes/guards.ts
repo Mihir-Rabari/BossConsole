@@ -104,6 +104,7 @@ export async function requireCsrfBody(
     submitted: body[CSRF_FIELD],
     secFetchSite: ctx.req.header("sec-fetch-site") ?? null,
     secFetchMode: ctx.req.header("sec-fetch-mode") ?? null,
+    secFetchDest: ctx.req.header("sec-fetch-dest") ?? null,
     origin: ctx.req.header("origin") ?? null,
     expectedOrigin,
   })

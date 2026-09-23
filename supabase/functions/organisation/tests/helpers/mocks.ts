@@ -122,6 +122,7 @@ export function formHeaders(cookie: string): Headers {
     "host": "api.risaboss.com",
     "origin": "https://api.risaboss.com",
     "sec-fetch-site": "same-origin",
+    "sec-fetch-dest": "document",
     "x-forwarded-proto": "https",
     cookie,
   })
