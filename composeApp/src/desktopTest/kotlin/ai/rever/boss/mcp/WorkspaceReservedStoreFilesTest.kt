@@ -154,7 +154,10 @@ class WorkspaceReservedStoreFilesTest {
         assertNull(WorkspaceMcpToolProvider.refusalForReservedStoreFile("Last_Session"))
         // The gate is the record files' exact names, not a substring match.
         assertFalse(WorkspaceFileManagerCommon.isReservedDocumentFileName("my_Space_Themes.json"))
-        assertFalse(WorkspaceFileManagerCommon.isReservedDocumentFileName("space_themes.json"))
+        // ...but the SAME record in lower case is refused: APFS/NTFS fold case, so
+        // space_themes.json IS Space_Themes.json there (#926).
+        assertTrue(WorkspaceFileManagerCommon.isReservedDocumentFileName("space_themes.json"))
+        assertTrue(WorkspaceFileManagerCommon.isReservedDocumentFileName("last_session_set.json"))
         assertEquals(
             setOf(LAST_SESSION_SET_FILE, SPACE_THEMES_FILE),
             WorkspaceFileManagerCommon.reservedDocumentFileNames,

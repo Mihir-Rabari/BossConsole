@@ -166,11 +166,19 @@ object WorkspaceFileManagerCommon {
      */
     val reservedDocumentFileNames: Set<String> = setOf(LAST_SESSION_SET_FILE, SPACE_THEMES_FILE)
 
+    /** [reservedDocumentFileNames] folded once for the case-insensitive comparison below. */
+    private val reservedDocumentFileNamesFolded: Set<String> = reservedDocumentFileNames.map { it.lowercase() }.toSet()
+
     /**
      * Whether [fileName] is one of the reserved record files (see [reservedDocumentFileNames]) -
      * the gate a caller-chosen name passes before anything is written.
+     *
+     * Compared case-folded because the filesystems this lands on fold too: APFS and NTFS are
+     * case-insensitive by default, so an exact-match gate is bypassed by spelling the same
+     * record in lower case (`space_themes.json` IS `Space_Themes.json` there), and the
+     * lowercase write replaces the store the gate exists to protect (#926).
      */
-    fun isReservedDocumentFileName(fileName: String): Boolean = fileName in reservedDocumentFileNames
+    fun isReservedDocumentFileName(fileName: String): Boolean = fileName.lowercase() in reservedDocumentFileNamesFolded
 
     /**
      * Extract workspace name from filename
