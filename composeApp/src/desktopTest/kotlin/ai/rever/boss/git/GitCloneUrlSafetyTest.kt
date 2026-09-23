@@ -57,6 +57,17 @@ class GitCloneUrlSafetyTest {
     }
 
     @Test
+    fun `validator refuses control characters and over-long URLs`() {
+        assertFalse(GitService.isSafeCloneUrl("https://example.invalid/repo.git\nforged log line"))
+        assertFalse(GitService.isSafeCloneUrl("https://example.invalid/repo.git\r"))
+        assertFalse(GitService.isSafeCloneUrl("/srv/git/repo\u0000.git"))
+        assertFalse(GitService.isSafeCloneUrl("https://example.invalid/repo\u007F.git"))
+        assertFalse(GitService.isSafeCloneUrl("https://example.invalid/" + "a".repeat(4096)))
+        assertTrue(GitService.isSafeCloneUrl("/srv/git/my repo.git"))
+        assertTrue(GitService.isSafeCloneUrl("./ext::sh -c x"))
+    }
+
+    @Test
     fun `validator refuses blank URLs`() {
         assertFalse(GitService.isSafeCloneUrl(""))
         assertFalse(GitService.isSafeCloneUrl("   "))
