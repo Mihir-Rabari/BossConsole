@@ -312,6 +312,18 @@ actual class UpdateService internal constructor(
             partFile.delete()
             partial = partFile
 
+            // A hashless catalog row is refused BEFORE the bytes stream: the checksum is
+            // required, so there is nothing to verify the download against and no reason to
+            // fetch it (the refusal used to land only after the whole download completed).
+            if (sha256 == null) {
+                logger.error(
+                    LogCategory.SYSTEM,
+                    "Refusing the update download - catalog row has no checksum",
+                    mapOf("asset" to assetName),
+                )
+                return null
+            }
+
             streamToFile(url, assetSize, partFile, onProgress)
 
             if (partFile.exists() && partFile.length() > 0) {
