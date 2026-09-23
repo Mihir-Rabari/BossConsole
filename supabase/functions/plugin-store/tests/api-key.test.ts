@@ -32,7 +32,7 @@ Deno.test("key generation covers the full charset (no folded-away indices)", () 
 })
 
 Deno.test("hashApiKey matches the database's pgcrypto digest bit for bit", async () => {
-  // 20260920000000's in-place repair hashes legacy raw key material with
+  // 20260923123000's in-place repair hashes legacy raw key material with
   // extensions.digest(..., 'sha256') encoded as lowercase hex. The edge
   // function must produce the identical digest for the same presented key,
   // or a key repaired in place stops validating.
