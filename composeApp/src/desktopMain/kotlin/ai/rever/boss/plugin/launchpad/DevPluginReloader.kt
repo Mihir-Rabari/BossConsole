@@ -121,7 +121,10 @@ object DevPluginReloader {
             throw e
         }
 
-        pruneStaging(pluginId, devRoot, sessionPreservedPaths[pluginId].orEmpty())
+        // Snapshot under the set's monitor: pruneStaging deletes everything not exempt, so it
+        // needs a stable copy rather than a live view another caller could mutate mid-iteration.
+        val preserved = sessionPreservedPaths[pluginId]?.let { snapshot -> synchronized(snapshot) { snapshot.toSet() } }.orEmpty()
+        pruneStaging(pluginId, devRoot, preserved)
 
         logger.info(
             LogCategory.SYSTEM,
@@ -303,8 +306,8 @@ object DevPluginReloader {
      * records the staged JAR plus every manager's prior path, so about five attempts, not ten)
      * and evicts the oldest-recorded paths first, so a long dev session bounds its staging footprint to
      * the cap plus the 3-version window while recent reload history keeps its rollback
-     * safety. Mutated only under this plugin's reload mutex, so the insertion order that
-     * drives eviction is stable; [pruneStaging] reads it under the same mutex.
+     * safety. Writes and the [pruneStaging] snapshot both run under the set's own monitor,
+     * so the insertion order that drives eviction stays stable.
      */
     private fun recordSessionPreservedPaths(
         pluginId: String,
