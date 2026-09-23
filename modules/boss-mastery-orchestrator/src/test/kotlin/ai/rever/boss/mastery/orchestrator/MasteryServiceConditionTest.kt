@@ -9,10 +9,14 @@ import ai.rever.boss.ipc.proto.MasteryProgress
 import ai.rever.boss.mastery.CapabilityInfo
 import ai.rever.boss.mastery.CapabilityResolver
 import ai.rever.boss.mastery.MasteryExecutor
+import io.grpc.Status
+import io.grpc.StatusRuntimeException
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -140,6 +144,110 @@ class MasteryServiceConditionTest {
             )
             assertTrue(events.last().hasCompleted())
             assertEquals("completed", service.getMasteryStatus(execution(events)).state)
+        }
+
+    @Test
+    fun `createMastery rejects a malformed edge condition loudly`() =
+        runBlocking {
+            val service = MasteryServiceImpl(MasteryExecutor(RecordingResolver(emptyMap())))
+            val error =
+                assertFailsWith<StatusRuntimeException> {
+                    service.createMastery(conditionalDefinition("scan_clean == true && confirmed == true"))
+                }
+            assertEquals(Status.INVALID_ARGUMENT.code, error.status.code)
+            assertEquals(
+                "Edge 'scan' -> 'delete' has an invalid condition: " +
+                    "Malformed condition 'scan_clean == true && confirmed == true' (failing closed; " +
+                    "supported forms: 'true', 'false', 'key', 'key == literal', 'key != literal')",
+                error.status.description,
+            )
+        }
+
+    @Test
+    fun `createMastery accepts well-formed and blank conditions`() =
+        runBlocking {
+            val service = MasteryServiceImpl(MasteryExecutor(RecordingResolver(emptyMap())))
+            assertEquals("guarded", service.createMastery(conditionalDefinition("scan_clean == true")).id)
+            assertEquals("guarded", service.createMastery(conditionalDefinition("scan_clean != dirty")).id)
+            assertEquals("guarded", service.createMastery(conditionalDefinition(" ")).id)
+        }
+
+    /**
+     * scan --(scan_clean == true)--> unlock <-- audit, with unlock declared
+     * pure: it must admit on the single followed audit edge.
+     */
+    private fun pureFanInDefinition() =
+        MasteryDefinition
+            .newBuilder()
+            .setId("fan-in-pure")
+            .setName("Fan In Pure")
+            .setDescription("unlock node admits on any followed edge")
+            .addNodes(
+                MasteryNode
+                    .newBuilder()
+                    .setId("scan")
+                    .setPluginId("plugin-a")
+                    .setAction("scan"),
+            ).addNodes(
+                MasteryNode
+                    .newBuilder()
+                    .setId("audit")
+                    .setPluginId("plugin-b")
+                    .setAction("audit"),
+            ).addNodes(
+                MasteryNode
+                    .newBuilder()
+                    .setId("unlock")
+                    .setPluginId("plugin-c")
+                    .setAction("unlock")
+                    .putInputMapping("cleanliness", "scan.scan_clean")
+                    .putInputMapping("auditLog", "audit.audited")
+                    .setPure(true),
+            ).addEdges(
+                MasteryEdge
+                    .newBuilder()
+                    .setFromNode("scan")
+                    .setToNode("unlock")
+                    .setOutputKey("scan_clean")
+                    .setInputKey("cleanliness")
+                    .setCondition("scan_clean == true"),
+            ).addEdges(
+                MasteryEdge
+                    .newBuilder()
+                    .setFromNode("audit")
+                    .setToNode("unlock")
+                    .setOutputKey("audited")
+                    .setInputKey("auditLog"),
+            ).build()
+
+    @Test
+    fun `a pure node declared through the proto keeps any-admit fan-in`() =
+        runBlocking {
+            val resolver =
+                RecordingResolver(
+                    mapOf(
+                        "plugin-a/scan" to mapOf("scan_clean" to "false"),
+                        "plugin-b/audit" to mapOf("audited" to "yes"),
+                        "plugin-c/unlock" to mapOf("unlocked" to "granted"),
+                    ),
+                )
+            val service = MasteryServiceImpl(MasteryExecutor(resolver))
+            service.createMastery(pureFanInDefinition())
+            val events =
+                service
+                    .executeMastery(
+                        ExecuteMasteryRequest.newBuilder().setMasteryId("fan-in-pure").build(),
+                    ).toList()
+
+            assertEquals(
+                setOf("scan", "audit", "unlock"),
+                events.filter { it.hasNodeStarted() }.map { it.nodeStarted.nodeId }.toSet(),
+            )
+            assertTrue(events.none { it.hasNodeSkipped() })
+            val unlockInput = resolver.invocations.single { it.second == "unlock" }.third
+            assertEquals("yes", unlockInput["auditLog"])
+            assertFalse("cleanliness" in unlockInput)
+            assertTrue(events.last().hasCompleted())
         }
 
     private fun execute() = ExecuteMasteryRequest.newBuilder().setMasteryId("guarded").build()

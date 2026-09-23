@@ -71,6 +71,27 @@ object MasteryEdgeCondition {
     }
 
     /**
+     * Why [condition] is not a well-formed expression, or null when it is
+     * valid — null, blank, or parsing to the bounded grammar above.
+     *
+     * This is the creation-time counterpart of the runtime fail-closed
+     * skip: definition validation rejects a malformed guard up front with
+     * the same reason string the executor would report if one ever slipped
+     * through, while the runtime skip stays in place as a backstop. Only
+     * syntax is checked — whether the referenced output keys carry values
+     * is a per-execution question and stays with [evaluate].
+     */
+    fun syntaxError(condition: String?): String? {
+        val expression = condition?.trim().orEmpty()
+        return when {
+            expression.isEmpty() -> null
+            expression.length > MAX_EXPRESSION_LENGTH -> oversized.reason
+            parse(expression) == null -> malformed(expression).reason
+            else -> null
+        }
+    }
+
+    /**
      * Evaluates [condition] against [sourceOutput], the output map of the
      * edge's source node. Never throws: every unparsable or unsupported input
      * fails closed as [Blocked] instead.
@@ -125,29 +146,36 @@ object MasteryEdgeCondition {
         }
     }
 
-    /** Parses [expression] into one of the supported forms, or null when malformed. */
+    /**
+     * Parses [expression] into one of the supported forms, or null when
+     * malformed. The three-token comparison form is parsed inline rather
+     * than through a helper so this object stays at ten functions.
+     */
     private fun parse(expression: String): Parsed? {
         val tokens = tokenize(expression) ?: return null
         return when (tokens.size) {
-            1 -> if (isValidKey(tokens[0])) Parsed.Truthy(tokens[0]) else null
-            3 -> parseComparison(tokens)
-            else -> null
-        }
-    }
-
-    private fun parseComparison(tokens: List<String>): Parsed? {
-        val negated =
-            when (tokens[1]) {
-                "==" -> false
-                "!=" -> true
-                else -> null
+            1 -> {
+                if (isValidKey(tokens[0])) Parsed.Truthy(tokens[0]) else null
             }
-        val expected = literalOf(tokens[2])
-        return when {
-            negated == null -> null
-            !isValidKey(tokens[0]) -> null
-            expected == null -> null
-            else -> Parsed.Comparison(tokens[0], negated, expected)
+
+            3 -> {
+                val negated =
+                    when (tokens[1]) {
+                        "==" -> false
+                        "!=" -> true
+                        else -> null
+                    }
+                val expected = literalOf(tokens[2])
+                if (negated == null || expected == null || !isValidKey(tokens[0])) {
+                    null
+                } else {
+                    Parsed.Comparison(tokens[0], negated, expected)
+                }
+            }
+
+            else -> {
+                null
+            }
         }
     }
 
@@ -204,7 +232,7 @@ object MasteryEdgeCondition {
     /** Output keys are bare identifiers; operator or quote characters mark a token malformed. */
     private fun isValidKey(token: String): Boolean = token.none { it in OPERATOR_CHARS }
 
-    private fun malformed(expression: String): Result =
+    private fun malformed(expression: String): Blocked =
         Blocked(
             "Malformed condition '$expression' (failing closed; supported forms: " +
                 "'true', 'false', 'key', 'key == literal', 'key != literal')",

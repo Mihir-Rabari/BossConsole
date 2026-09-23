@@ -3,6 +3,7 @@ package ai.rever.boss.mastery
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class MasteryEdgeConditionTest {
@@ -159,5 +160,33 @@ class MasteryEdgeConditionTest {
         val verdict = MasteryEdgeCondition.evaluate("absent == ok", mapOf("present" to "ok"))
         assertIs<MasteryEdgeCondition.Blocked>(verdict)
         assertTrue(verdict.reason.contains("no output value"), verdict.reason)
+    }
+
+    @Test
+    fun `syntaxError accepts unconditional and well-formed conditions`() {
+        assertNull(MasteryEdgeCondition.syntaxError(null))
+        assertNull(MasteryEdgeCondition.syntaxError(""))
+        assertNull(MasteryEdgeCondition.syntaxError("   "))
+        assertNull(MasteryEdgeCondition.syntaxError("true"))
+        assertNull(MasteryEdgeCondition.syntaxError("key"))
+        assertNull(MasteryEdgeCondition.syntaxError("key == literal"))
+        assertNull(MasteryEdgeCondition.syntaxError("key != \"quoted value\""))
+    }
+
+    @Test
+    fun `syntaxError reports the same reason the runtime fail-closed skip would`() {
+        val expression = "scan_clean == true && confirmed == true"
+        assertEquals(
+            "Malformed condition '$expression' (failing closed; supported forms: " +
+                "'true', 'false', 'key', 'key == literal', 'key != literal')",
+            MasteryEdgeCondition.syntaxError(expression),
+        )
+        assertEquals(
+            "Malformed condition: longer than 256 characters (failing closed)",
+            MasteryEdgeCondition.syntaxError("k".repeat(300)),
+        )
+        listOf("key >", "a || b", "!key", "key == \"unterminated").forEach { expression ->
+            assertTrue(MasteryEdgeCondition.syntaxError(expression)!!.startsWith("Malformed condition"))
+        }
     }
 }

@@ -275,7 +275,7 @@ class MasteryExecutorConditionTest {
         }
 
     @Test
-    fun `a node still runs when another incoming edge is followed`() =
+    fun `a blocked guard vetoes a side-effecting node even when another edge is followed`() =
         runBlocking {
             val resolver =
                 RecordingResolver(
@@ -287,14 +287,23 @@ class MasteryExecutorConditionTest {
                 )
             val mastery =
                 MasteryDefinition(
-                    id = "fan-in",
-                    name = "Fan In",
+                    id = "fan-in-veto",
+                    name = "Fan In Veto",
                     description = "",
                     nodes =
                         listOf(
                             MasteryNode("scan", "plugin-a", "scan"),
                             MasteryNode("audit", "plugin-b", "audit"),
-                            MasteryNode("archive", "plugin-c", "archive"),
+                            MasteryNode(
+                                id = "archive",
+                                pluginId = "plugin-c",
+                                action = "archive",
+                                inputMapping =
+                                    mapOf(
+                                        "cleanliness" to "scan.scan_clean",
+                                        "auditLog" to "audit.audited",
+                                    ),
+                            ),
                         ),
                     edges =
                         listOf(
@@ -310,8 +319,118 @@ class MasteryExecutorConditionTest {
                 )
             val events = MasteryExecutor(resolver).execute(mastery, emptyMap()).toList()
 
+            // The scan guard fired, so the side-effecting archive node is
+            // vetoed even though the unguarded audit edge is followed: the
+            // scan mapping it would have consumed is exactly the data the
+            // author guarded.
             val started = events.filterIsInstance<MasteryProgress.NodeStarted>().map { it.nodeId }
-            assertEquals(setOf("scan", "audit", "archive"), started.toSet())
+            assertEquals(setOf("scan", "audit"), started.toSet())
+            assertTrue(resolver.invocations.none { it.second == "archive" })
+
+            val skipped = events.filterIsInstance<MasteryProgress.NodeSkipped>()
+            assertEquals(listOf("archive"), skipped.map { it.nodeId })
+            assertEquals(
+                "incoming edge blocked: condition 'scan_clean == true' evaluated false",
+                skipped.single().reason,
+            )
+            val completed = assertIs<MasteryProgress.Completed>(events.last())
+            assertFalse("archived" in completed.output)
+        }
+
+    @Test
+    fun `a pure node admits on any followed edge while the blocked edge contributes no data`() =
+        runBlocking {
+            val resolver =
+                RecordingResolver(
+                    mapOf(
+                        "plugin-a/scan" to mapOf("scan_clean" to "false"),
+                        "plugin-b/audit" to mapOf("audited" to "yes"),
+                        "plugin-c/unlock" to mapOf("unlocked" to "granted"),
+                    ),
+                )
+            val mastery =
+                MasteryDefinition(
+                    id = "fan-in-pure",
+                    name = "Fan In Pure",
+                    description = "",
+                    nodes =
+                        listOf(
+                            MasteryNode("scan", "plugin-a", "scan"),
+                            MasteryNode("audit", "plugin-b", "audit"),
+                            MasteryNode(
+                                id = "unlock",
+                                pluginId = "plugin-c",
+                                action = "unlock",
+                                inputMapping =
+                                    mapOf(
+                                        "cleanliness" to "scan.scan_clean",
+                                        "auditLog" to "audit.audited",
+                                    ),
+                                pure = true,
+                            ),
+                        ),
+                    edges =
+                        listOf(
+                            MasteryEdge(
+                                "scan",
+                                "unlock",
+                                "scan_clean",
+                                "cleanliness",
+                                "scan_clean == true",
+                            ),
+                            MasteryEdge("audit", "unlock", "audited", "auditLog"),
+                        ),
+                )
+            val events = MasteryExecutor(resolver).execute(mastery, emptyMap()).toList()
+
+            // The mastery-unlock-style node keeps any-admit fan-in: it runs
+            // on the followed audit edge, but the blocked scan edge's mapped
+            // data never reaches it — only the audit mapping resolves.
+            val started = events.filterIsInstance<MasteryProgress.NodeStarted>().map { it.nodeId }
+            assertEquals(setOf("scan", "audit", "unlock"), started.toSet())
+            assertTrue(events.filterIsInstance<MasteryProgress.NodeSkipped>().isEmpty())
+
+            val unlockInput = resolver.invocations.single { it.second == "unlock" }.third
+            assertEquals("yes", unlockInput["auditLog"])
+            assertFalse("cleanliness" in unlockInput)
+            val completed = assertIs<MasteryProgress.Completed>(events.last())
+            assertEquals("granted", completed.output["unlocked"])
+        }
+
+    @Test
+    fun `a skip reason longer than 2048 characters is capped like NodeFailed error`() =
+        runBlocking {
+            val longKey = "k" + "x".repeat(230)
+            val resolver = RecordingResolver(mapOf("plugin-a/scan" to mapOf("scan_clean" to "true")))
+            val mastery =
+                MasteryDefinition(
+                    id = "reason-cap",
+                    name = "Reason Cap",
+                    description = "",
+                    nodes =
+                        listOf(
+                            MasteryNode("scan", "plugin-a", "scan"),
+                            MasteryNode("delete", "plugin-b", "delete"),
+                        ),
+                    edges =
+                        (1..10).map { i ->
+                            MasteryEdge("scan", "delete", "scan_clean", "target", longKey + i)
+                        },
+                )
+            val events = MasteryExecutor(resolver).execute(mastery, emptyMap()).toList()
+
+            // Ten blocked edges join ten ~290-character reasons into one
+            // reason per skipped node; the emitted reason stays bounded.
+            val skipped = events.filterIsInstance<MasteryProgress.NodeSkipped>()
+            assertEquals(listOf("delete"), skipped.map { it.nodeId })
+            assertEquals(
+                (1..10)
+                    .joinToString("; ") { i ->
+                        "condition '${longKey}$i' evaluated false (key has no output value)"
+                    }.take(2048),
+                skipped.single().reason,
+            )
+            assertEquals(2048, skipped.single().reason.length)
         }
 
     @Test
