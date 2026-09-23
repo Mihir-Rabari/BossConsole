@@ -2256,12 +2256,16 @@ actual object GitService {
         // Fail-closed on option-shaped values (a leading `-`, e.g. `--upload-pack=<cmd>`
         // which git honors on local clones) and blank strings: neither can reach the
         // allow-list below.
-        if (repositoryUrl.isBlank() || repositoryUrl.startsWith("-")) return false
+        //
         // Same control-character and length limits as [isSafeRefName], so an embedded
         // newline cannot forge a log line when the URL is logged. Spaces stay allowed:
         // local paths legitimately contain them.
-        if (repositoryUrl.length > MAX_CLONE_URL_LENGTH) return false
-        if (repositoryUrl.any { it.code < 0x20 || it == '\u007F' }) return false
+        val refused =
+            repositoryUrl.isBlank() ||
+                repositoryUrl.startsWith("-") ||
+                repositoryUrl.length > MAX_CLONE_URL_LENGTH ||
+                repositoryUrl.any { it.code < 0x20 || it == '\u007F' }
+        if (refused) return false
         // The allow-list: the four URL forms the clone dialog accepts, or an explicit
         // local path, which the clone lifecycle tests and retry flow clone from.
         // Everything else is refused fail-closed: remote-helper URLs (`ext::sh -c <cmd>`
