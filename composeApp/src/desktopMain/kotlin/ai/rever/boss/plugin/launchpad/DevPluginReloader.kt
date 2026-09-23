@@ -299,8 +299,9 @@ object DevPluginReloader {
      * session runs. What was never deliberate is that this set grew without bound - one
      * path per reload, pinning 0.2-6 GB of staging JARs until process exit (#1217).
      *
-     * The set is now capped at [MAX_SESSION_PRESERVED_PATHS] per plugin and evicts the
-     * oldest-recorded paths first, so a long dev session bounds its staging footprint to
+     * The set is now capped at [MAX_SESSION_PRESERVED_PATHS] paths per plugin (each attempt
+     * records the staged JAR plus every manager's prior path, so about five attempts, not ten)
+     * and evicts the oldest-recorded paths first, so a long dev session bounds its staging footprint to
      * the cap plus the 3-version window while recent reload history keeps its rollback
      * safety. Mutated only under this plugin's reload mutex, so the insertion order that
      * drives eviction is stable; [pruneStaging] reads it under the same mutex.
@@ -310,10 +311,15 @@ object DevPluginReloader {
         paths: Collection<String>,
     ) {
         if (paths.isEmpty()) return
-        val recorded = sessionPreservedPaths.getOrPut(pluginId) { linkedSetOf() }
-        recorded.addAll(paths)
-        while (recorded.size > MAX_SESSION_PRESERVED_PATHS) {
-            recorded.remove(recorded.first())
+        // computeIfAbsent, not getOrPut: atomic on the ConcurrentHashMap. The set itself is a plain
+        // LinkedHashSet (its order drives eviction), so the add and the eviction run together
+        // under its monitor: correct even for a caller outside the reload mutex.
+        val recorded = sessionPreservedPaths.computeIfAbsent(pluginId) { linkedSetOf() }
+        synchronized(recorded) {
+            recorded.addAll(paths)
+            while (recorded.size > MAX_SESSION_PRESERVED_PATHS) {
+                recorded.remove(recorded.first())
+            }
         }
     }
 
