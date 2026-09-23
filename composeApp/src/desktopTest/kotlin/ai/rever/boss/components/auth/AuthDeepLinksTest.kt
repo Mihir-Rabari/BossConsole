@@ -185,6 +185,37 @@ class AuthDeepLinksTest {
     }
 
     @Test
+    fun `parse refuses a valid query token beside an empty fragment access token`() {
+        // `#access_token=` carries no token-shaped value, so it does not trip the
+        // ambiguity veto; the empty value is still selected over the valid query
+        // token and fails tokenShape, and the link fails closed. Pinned so the
+        // outcome is recorded rather than accidental.
+        assertNull(AuthDeepLinks.parse("boss://auth/verify?token=t#access_token="))
+    }
+
+    @Test
+    fun `parse lets the fragment type win when both sections carry one`() {
+        // The refuse-on-ambiguity rule is the token's, not the type's: a `type` in both
+        // sections is not a smuggle — the value is not a secret and the server rejects a
+        // mismatched one — so the fragment wins as it does against the default. Pinned so
+        // the difference from the token's cross-section refusal stays a visible choice.
+        val link = AuthDeepLinks.parse("boss://auth/verify?token=t&type=signup#type=recovery")
+        assertIs<AuthDeepLink.MagicLinkVerify>(link)
+        assertEquals("t", link.token)
+        assertEquals("recovery", link.type)
+    }
+
+    @Test
+    fun `parse refuses a token containing a semicolon because ampersand is the only separator`() {
+        // `;` never splits a query pair: `token=a;token=b` is one value carrying a `;`,
+        // a character no producer's token has, so tokenShape refuses it rather than
+        // resolving the pair by first match. Matches MagicLinkPaste's ktor
+        // parseQueryString, which also splits on `&` alone.
+        assertNull(AuthDeepLinks.parse("boss://auth/verify?token=a;token=b"))
+        assertNull(AuthDeepLinks.parse("boss://passkey/registered?sessionId=$sessionId;x=y"))
+    }
+
+    @Test
     fun `parse accepts a query-token link mangled with a mail-client fragment`() {
         // Some mail clients append `#_=_` to a sign-in email's link. The fragment carries no
         // token-shaped value, so the cross-section ambiguity rule must not refuse it.
@@ -265,6 +296,9 @@ class AuthDeepLinksTest {
     fun `isAuthShaped names the OS-mangled forms without matching smuggled routes`() {
         assertTrue(AuthDeepLinks.isAuthShaped("boss://auth/verify/"))
         assertTrue(AuthDeepLinks.isAuthShaped("boss:///auth/verify?token=t"))
+        // The case-folded host parse refuses as its allowlist test pins; this diagnostic
+        // still names it, which is the point of the check being case-insensitive.
+        assertTrue(AuthDeepLinks.isAuthShaped("boss://AUTH/verify?token=t"))
         assertFalse(AuthDeepLinks.isAuthShaped("boss://file/open?path=/tmp/auth/verify&token=x"))
         assertFalse(AuthDeepLinks.isAuthShaped("boss://url?target=passkey/authenticated?sessionId=$sessionId"))
         assertFalse(AuthDeepLinks.isAuthShaped("https://auth/verify?token=t"))

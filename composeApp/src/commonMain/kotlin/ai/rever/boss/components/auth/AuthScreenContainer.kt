@@ -1,8 +1,6 @@
 package ai.rever.boss.components.auth
 
 import BossTheme
-import ai.rever.boss.components.auth.AuthDeepLink
-import ai.rever.boss.components.auth.AuthDeepLinks
 import ai.rever.boss.components.auth.screens.LoginFormScreen
 import ai.rever.boss.components.auth.screens.MagicLinkWaitingScreen
 import ai.rever.boss.components.auth.screens.PasskeySelectionScreen

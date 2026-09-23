@@ -124,11 +124,13 @@ object AuthDeepLinks {
      * Diagnostic only: nothing acts on it, and a refused link falls through to the generic
      * deep-link router whatever this returns. The host+path — the part before any `?` and
      * `#` — is what is checked, so a route smuggled inside a parameter value does not read
-     * as auth-shaped.
+     * as auth-shaped. The check is case-insensitive so it also names the case-folded hosts
+     * the allowlist refuses (`boss://AUTH/verify`) — the mangling class most likely to need
+     * the diagnostic. Only this diagnostic folds case; [parse] itself stays case-sensitive.
      */
     fun isAuthShaped(uri: String): Boolean {
         val sections = sectionsOf(uri) ?: return false
-        return AUTH_HOST_PATHS.any { sections.hostPath.contains(it) }
+        return AUTH_HOST_PATHS.any { sections.hostPath.lowercase().contains(it) }
     }
 
     /** The scheme/host+path/query/fragment split of a `boss://` link, or null for any other scheme. */
