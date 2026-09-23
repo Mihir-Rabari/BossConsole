@@ -43,12 +43,20 @@ fun PasskeyBrowserScreen(
 
     passkeyBrowserLogger.debug(LogCategory.AUTH, "Displaying WebAuthn page", mapOf("url" to LogSanitizer.maskUriParams(url)))
 
-    // Monitor for deep link callbacks indicating success
+    // Monitor for the deep link callback of THIS ceremony. The screen completes only the
+    // ceremony that opened it: the callback's session id must be the one that ceremony
+    // minted (sessionId). Anything else — a magic link, another session's callback, a link
+    // that does not parse — is left for BossAppWithAuth's collector to route; this screen
+    // does not act on it.
     val deepLink by DeepLinkHandler.deepLinkFlow.collectAsState()
     LaunchedEffect(deepLink) {
         val link = deepLink
-        if (link != null && AuthDeepLinks.parse(link) != null) {
-            passkeyBrowserLogger.info(LogCategory.AUTH, "Deep link received, operation successful")
+        if (link != null && AuthDeepLinks.completesPasskeyCeremony(link, sessionId)) {
+            passkeyBrowserLogger.info(
+                LogCategory.AUTH,
+                "Deep link received, passkey ceremony completed",
+                mapOf("sessionId" to LogSanitizer.maskSessionId(sessionId)),
+            )
 
             // Add small delay for visual feedback
             delay(500)

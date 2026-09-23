@@ -2,8 +2,10 @@ package ai.rever.boss.components.auth
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * Pins the structural contract of the auth deep-link segment.
@@ -16,6 +18,12 @@ import kotlin.test.assertNull
  * a parameter value, a lookalike host, a session id scraped out of the fragment, an ambiguous
  * duplicate parameter. A regression on any of these reopens a login-CSRF-shaped door that any
  * web page can walk a user's OS into.
+ *
+ * The merge-contract round is pinned here too: a token in both the query and the fragment is
+ * refused instead of resolved by first match, the mail clients' `#_=_` mangling of a sign-in
+ * email's link keeps parsing, a producer token that `encodeURIComponent` leaves unescaped
+ * still reads verbatim, and [AuthDeepLinks.completesPasskeyCeremony] completes only the
+ * ceremony the app actually started.
  */
 class AuthDeepLinksTest {
     private val sessionId = "123e4567-e89b-12d3-a456-426614174000"
@@ -163,5 +171,102 @@ class AuthDeepLinksTest {
     fun `parse refuses a case-tweaked host because the allowlist is case-sensitive`() {
         assertNull(AuthDeepLinks.parse("boss://AUTH/verify?token=t&type=signup"))
         assertNull(AuthDeepLinks.parse("boss://Passkey/registered?sessionId=$sessionId"))
+    }
+
+    @Test
+    fun `parse refuses a token carried in both the query and the fragment`() {
+        assertNull(AuthDeepLinks.parse("boss://auth/verify?token=a#access_token=b"))
+        assertNull(AuthDeepLinks.parse("boss://auth/verify?token=a#token=b"))
+    }
+
+    @Test
+    fun `parse refuses a token duplicated under two names in the fragment`() {
+        assertNull(AuthDeepLinks.parse("boss://auth/verify#access_token=a&token=b"))
+    }
+
+    @Test
+    fun `parse accepts a query-token link mangled with a mail-client fragment`() {
+        // Some mail clients append `#_=_` to a sign-in email's link. The fragment carries no
+        // token-shaped value, so the cross-section ambiguity rule must not refuse it.
+        val link = AuthDeepLinks.parse("boss://auth/verify?token=t&type=magiclink#_=_")
+        assertIs<AuthDeepLink.MagicLinkVerify>(link)
+        assertEquals("t", link.token)
+        assertEquals("magiclink", link.type)
+    }
+
+    @Test
+    fun `parse reads a producer token that encodeURIComponent leaves unescaped`() {
+        // The redirect function embeds the token with encodeURIComponent, so every character
+        // it escapes (%xx) is a character tokenShape refuses by design: the parser never
+        // decodes. The tokens it leaves unescaped — GoTrue's hex token hash from the sign-in
+        // email, and the JWTs of the Supabase success redirect — stay inside the unreserved
+        // set [A-Za-z0-9._~-] that encodeURIComponent never escapes, and must keep parsing
+        // verbatim, exactly as before the cross-section ambiguity rule.
+        val tokenHash = "0123456789abcdef0123456789abcdef0123456789abcdef01234567"
+        val unescapedChars = "aZ09.-~_"
+        val fromEmail = AuthDeepLinks.parse("boss://auth/verify?token=$tokenHash&type=signup")
+        assertIs<AuthDeepLink.MagicLinkVerify>(fromEmail)
+        assertEquals(tokenHash, fromEmail.token)
+        assertEquals("signup", fromEmail.type)
+        val fromRedirect = AuthDeepLinks.parse("boss://auth/verify#access_token=$unescapedChars")
+        assertIs<AuthDeepLink.MagicLinkVerify>(fromRedirect)
+        assertEquals(unescapedChars, fromRedirect.token)
+    }
+
+    @Test
+    fun `parse refuses a trailing slash after the allowlisted host path`() {
+        // The shape some Linux .desktop deliveries produce when the Exec line quotes the URI
+        // with a trailing slash: the slash is part of hostPath, so it is not the producer's
+        // route.
+        assertNull(AuthDeepLinks.parse("boss://auth/verify/"))
+        assertNull(AuthDeepLinks.parse("boss://auth/verify/?token=t"))
+    }
+
+    @Test
+    fun `parse refuses an empty authority before the auth host path`() {
+        // boss:///auth/verify makes hostPath start with '/', so it is not the producer's
+        // route either. Both OS-mangled forms are pinned so the refusal stays recorded.
+        assertNull(AuthDeepLinks.parse("boss:///auth/verify?token=t"))
+    }
+
+    @Test
+    fun `completesPasskeyCeremony binds the callback to the ceremony the app started`() {
+        assertTrue(AuthDeepLinks.completesPasskeyCeremony("boss://passkey/registered?sessionId=$sessionId", sessionId))
+        assertTrue(
+            AuthDeepLinks.completesPasskeyCeremony("boss://passkey/authenticated?sessionId=$sessionId", sessionId),
+        )
+    }
+
+    @Test
+    fun `completesPasskeyCeremony refuses a callback that is not the started ceremony`() {
+        val otherSessionId = "123e4567-e89b-12d3-a456-426614174999"
+        assertFalse(
+            AuthDeepLinks.completesPasskeyCeremony(
+                "boss://passkey/authenticated?sessionId=$otherSessionId",
+                sessionId,
+            ),
+        )
+        assertFalse(AuthDeepLinks.completesPasskeyCeremony("boss://auth/verify?token=t", sessionId))
+        assertFalse(
+            AuthDeepLinks.completesPasskeyCeremony(
+                "boss://evil/passkey/authenticated?sessionId=$sessionId",
+                sessionId,
+            ),
+        )
+        assertFalse(
+            AuthDeepLinks.completesPasskeyCeremony(
+                "boss://passkey/authenticated?sessionId=$sessionId#sessionId=$sessionId",
+                sessionId,
+            ),
+        )
+    }
+
+    @Test
+    fun `isAuthShaped names the OS-mangled forms without matching smuggled routes`() {
+        assertTrue(AuthDeepLinks.isAuthShaped("boss://auth/verify/"))
+        assertTrue(AuthDeepLinks.isAuthShaped("boss:///auth/verify?token=t"))
+        assertFalse(AuthDeepLinks.isAuthShaped("boss://file/open?path=/tmp/auth/verify&token=x"))
+        assertFalse(AuthDeepLinks.isAuthShaped("boss://url?target=passkey/authenticated?sessionId=$sessionId"))
+        assertFalse(AuthDeepLinks.isAuthShaped("https://auth/verify?token=t"))
     }
 }

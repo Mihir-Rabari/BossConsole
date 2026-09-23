@@ -48,8 +48,13 @@ sealed interface AuthDeepLink {
  *   `PasskeyAuthService` mints; a copy in the fragment is an ambiguous smuggle and refuses the
  *   link;
  * - the token is the fragment's `access_token` (Supabase success redirect) or else the query's
- *   `token` (the manual-paste shape), exactly once, at most 2048 chars, and URL-safe like
- *   every producer's token, so a value carrying other characters is refused, not decoded;
+ *   `token` (the manual-paste shape), exactly once across the whole link: a token-shaped value
+ *   in more than one place — the query and the fragment, or two fragment names — is an
+ *   ambiguous smuggle and refuses the link instead of being resolved by first match. The mail
+ *   clients' `#_=_` fragment mangling carries no token and keeps parsing. It is at most 2048
+ *   chars and URL-safe like every producer's token, so a value carrying other characters is
+ *   refused, not decoded: the redirect function embeds its tokens with `encodeURIComponent`,
+ *   and every character that escapes is a shape no producer's token carries;
  * - the type is the fragment's or else the query's `type`, `[a-z_]` up to 32, defaulting to
  *   `magiclink`.
  *
@@ -62,6 +67,10 @@ object AuthDeepLinks {
     private const val MAGIC_LINK_HOST_PATH = "auth/verify"
     private const val PASSKEY_REGISTERED_HOST_PATH = "passkey/registered"
     private const val PASSKEY_AUTHENTICATED_HOST_PATH = "passkey/authenticated"
+
+    /** The ceremony routes, for the diagnostic [isAuthShaped] check only. */
+    private val AUTH_HOST_PATHS =
+        listOf(MAGIC_LINK_HOST_PATH, PASSKEY_REGISTERED_HOST_PATH, PASSKEY_AUTHENTICATED_HOST_PATH)
 
     private const val ACCESS_TOKEN_PARAM = "access_token"
     private const val TOKEN_PARAM = "token"
@@ -93,6 +102,35 @@ object AuthDeepLinks {
         }
     }
 
+    /**
+     * Whether [uri] completes the passkey ceremony the app started as [sessionId]: a parsed
+     * passkey callback whose session id is the one that ceremony minted. Everything else — a
+     * magic link, another session's callback, or a link that does not parse — is refused, so
+     * the caller leaves the link for the app-level collector instead of acting on it.
+     */
+    fun completesPasskeyCeremony(
+        uri: String,
+        sessionId: String,
+    ): Boolean =
+        when (val link = parse(uri)) {
+            is AuthDeepLink.PasskeyRegistered -> link.sessionId == sessionId
+            is AuthDeepLink.PasskeyAuthenticated -> link.sessionId == sessionId
+            else -> false
+        }
+
+    /**
+     * Whether [uri] carries an auth ceremony's route even though [parse] refuses it — the
+     * OS-mangled forms (`boss://auth/verify/`, `boss:///auth/verify?…`) and the look-alikes.
+     * Diagnostic only: nothing acts on it, and a refused link falls through to the generic
+     * deep-link router whatever this returns. The host+path — the part before any `?` and
+     * `#` — is what is checked, so a route smuggled inside a parameter value does not read
+     * as auth-shaped.
+     */
+    fun isAuthShaped(uri: String): Boolean {
+        val sections = sectionsOf(uri) ?: return false
+        return AUTH_HOST_PATHS.any { sections.hostPath.contains(it) }
+    }
+
     /** The scheme/host+path/query/fragment split of a `boss://` link, or null for any other scheme. */
     private fun sectionsOf(uri: String): Sections? {
         if (!uri.startsWith("boss://", ignoreCase = true)) return null
@@ -105,14 +143,24 @@ object AuthDeepLinks {
         )
     }
 
-    /** [sections] as a magic-link callback, or null without an exactly-once URL-safe token. */
+    /** [sections] as a magic-link callback, or null without exactly one URL-safe token. */
     private fun magicLinkOf(sections: Sections): AuthDeepLink? {
+        val queryToken = sections.query[TOKEN_PARAM]?.first()
+        val accessToken = sections.fragment[ACCESS_TOKEN_PARAM]?.first()
+        val fragmentToken = sections.fragment[TOKEN_PARAM]?.first()
+        val tokenCandidates = listOfNotNull(queryToken, accessToken, fragmentToken).filter { tokenShape.matches(it) }
+        // Refuse on ambiguity, like the passkey branch refuses a session id carried in the
+        // fragment: each producer writes the token to exactly one place, so a repeated name
+        // or token-shaped values in more than one — the query and the fragment, or two
+        // fragment names — are a smuggle, not a callback to resolve by first match. The mail
+        // clients' `#_=_` fragment mangling carries no token-shaped value and still parses.
         if (isDuplicated(sections.fragment, ACCESS_TOKEN_PARAM, TYPE_PARAM) ||
-            isDuplicated(sections.query, TOKEN_PARAM, TYPE_PARAM)
+            isDuplicated(sections.query, TOKEN_PARAM, TYPE_PARAM) ||
+            tokenCandidates.size > 1
         ) {
             return null
         }
-        val token = sections.fragment[ACCESS_TOKEN_PARAM]?.first() ?: sections.query[TOKEN_PARAM]?.first()
+        val token = accessToken ?: queryToken
         val type = sections.fragment[TYPE_PARAM]?.first() ?: sections.query[TYPE_PARAM]?.first() ?: DEFAULT_TYPE
         return if (token != null && tokenShape.matches(token) && typeShape.matches(type)) {
             AuthDeepLink.MagicLinkVerify(token, type)

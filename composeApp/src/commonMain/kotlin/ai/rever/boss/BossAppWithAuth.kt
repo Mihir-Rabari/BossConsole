@@ -60,7 +60,7 @@ fun ComponentContext.BossAppWithAuth(
                     logger.info(
                         LogCategory.AUTH,
                         "Passkey registration completed",
-                        mapOf("sessionId" to link.sessionId),
+                        mapOf("sessionId" to LogSanitizer.maskSessionId(link.sessionId)),
                     )
                     PasskeySessionEventHandler.handleRegistrationCompleted(link.sessionId)
                     DeepLinkHandler.clearDeepLink()
@@ -70,7 +70,7 @@ fun ComponentContext.BossAppWithAuth(
                     logger.info(
                         LogCategory.AUTH,
                         "Passkey authentication completed",
-                        mapOf("sessionId" to link.sessionId),
+                        mapOf("sessionId" to LogSanitizer.maskSessionId(link.sessionId)),
                     )
 
                     // Trigger the polling check to complete authentication
@@ -82,7 +82,7 @@ fun ComponentContext.BossAppWithAuth(
                             logger.debug(
                                 LogCategory.AUTH,
                                 "Checking authentication status",
-                                mapOf("sessionId" to link.sessionId),
+                                mapOf("sessionId" to LogSanitizer.maskSessionId(link.sessionId)),
                             )
 
                             // Notify that authentication completed
@@ -91,7 +91,7 @@ fun ComponentContext.BossAppWithAuth(
                             logger.warn(
                                 LogCategory.AUTH,
                                 "No metadata found for session",
-                                mapOf("sessionId" to link.sessionId),
+                                mapOf("sessionId" to LogSanitizer.maskSessionId(link.sessionId)),
                             )
                         }
                     }
@@ -127,8 +127,19 @@ fun ComponentContext.BossAppWithAuth(
 
                 else -> {
                     // Route non-auth deep links (boss://url, boss://file, boss://folder, boss://terminal, boss://workspace)
-                    // back to DeepLinkHandler for processing
-                    logger.debug(LogCategory.AUTH, "Routing non-auth deep link to DeepLinkHandler")
+                    // back to DeepLinkHandler for processing. A link that only LOOKS like an
+                    // auth ceremony reaches this branch too — parse refused it — so name that
+                    // case before the generic routing: a sign-in email link the OS mangled
+                    // must not disappear inside "non-auth" with no trace of the refusal.
+                    if (AuthDeepLinks.isAuthShaped(uri)) {
+                        logger.warn(
+                            LogCategory.AUTH,
+                            "Auth-shaped deep link refused; falling through to the generic deep-link router",
+                            mapOf("uri" to LogSanitizer.describeUri(uri)),
+                        )
+                    } else {
+                        logger.debug(LogCategory.AUTH, "Routing non-auth deep link to DeepLinkHandler")
+                    }
                     DeepLinkHandler.processDeepLink(uri)
                     DeepLinkHandler.clearDeepLink()
                 }
