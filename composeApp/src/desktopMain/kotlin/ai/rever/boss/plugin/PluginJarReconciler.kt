@@ -212,6 +212,9 @@ object PluginJarReconciler {
      * jar becomes a loser and is cleaned up here. When nothing verifies, touch nothing - an
      * empty API layer is the loader's degraded state to own, not a reason to delete files.
      */
+    // The accumulators travel together; bundling them only to satisfy the count would
+    // hide what the function actually threads through.
+    @Suppress("LongParameterList")
     private fun reconcileApiGroup(
         pluginDir: File,
         pluginId: String,
