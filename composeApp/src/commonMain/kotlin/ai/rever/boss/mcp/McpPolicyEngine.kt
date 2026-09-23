@@ -445,6 +445,20 @@ class McpPolicyEngine(
                 return@synchronized false
             }
             if (preserveDeny && policyFor(toolName, providerId) == McpPolicyAction.DENY) return@synchronized false
+            // A scoped DENY earned by ANOTHER provider is invisible to the policyFor guard
+            // above (ruleSpeaksForProvider is false for this caller), but this write would
+            // still erase it: configWithToolRule replaces the rule AND re-scopes the name,
+            // so the earlier provider's tool would fall through to the risk default - ALLOW
+            // for a read-only-classified name. Refuse and leave the earlier decision in
+            // force; overwriting another provider's persisted decision is a deliberate act
+            // that belongs in the policy dialog, not in a queued approval's write.
+            if (preserveDeny &&
+                action != McpPolicyAction.DENY &&
+                _config.value.rules[toolName] == McpPolicyAction.DENY &&
+                _config.value.ruleProviders[toolName]?.let { it != providerId } == true
+            ) {
+                return@synchronized false
+            }
             applyConfig(
                 key = toolName,
                 logKey = "tool",

@@ -60,6 +60,31 @@ class McpPolicyEngineProviderScopedRuleTest {
     }
 
     @Test
+    fun `a queued approval for one provider cannot erase another provider's persisted DENY`() {
+        val file = createTempPolicyFile()
+        val engine = McpPolicyEngine(policyFile = file)
+        engine.setToolPolicy("git_status", McpPolicyAction.DENY, providerId = "plugin-a")
+
+        // The reactive approval path (validateApproval) writes with preserveDeny = true and
+        // the approving provider's id. git_status's no-rule default for a second provider is
+        // the read-only default ALLOW, so a write that erased the scoped DENY would leave
+        // plugin-a running unattended on a tool the operator explicitly denied.
+        val written =
+            engine.setToolPolicy(
+                "git_status",
+                McpPolicyAction.ALLOW,
+                preserveDeny = true,
+                providerId = "plugin-b",
+            )
+
+        assertEquals(false, written)
+        // The earlier decision is still in force, for the provider that earned it and on disk.
+        assertEquals(McpPolicyAction.DENY, engine.policyFor("git_status", "plugin-a"))
+        val reloaded = McpPolicyEngine(policyFile = file)
+        assertEquals(McpPolicyAction.DENY, reloaded.policyFor("git_status", "plugin-a"))
+    }
+
+    @Test
     fun `a persisted DENY earned for one provider does not block another provider's same-named tool either`() {
         val file = createTempPolicyFile()
         val engine = McpPolicyEngine(policyFile = file)
