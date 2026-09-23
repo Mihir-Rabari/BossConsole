@@ -1,5 +1,5 @@
 -- pgTAP tests for the part-3 SECURITY DEFINER search_path hardening
--- (20260919000000, BossConsole#1165).
+-- (20260923120000, BossConsole#1165).
 --
 -- Part-1 (20260916130000, #773) and part-2 (20260916140000, #772) pinned
 -- the passkey lifecycle and identity/secret sets; the live catalog audit
