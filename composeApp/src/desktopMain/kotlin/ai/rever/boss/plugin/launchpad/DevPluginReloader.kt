@@ -121,13 +121,7 @@ object DevPluginReloader {
             throw e
         }
 
-        // Snapshot under the set's monitor: pruneStaging deletes everything not exempt, so it
-        // needs a stable copy rather than a live view another caller could mutate mid-iteration.
-        val preserved =
-            sessionPreservedPaths[pluginId]
-                ?.let { snapshot -> synchronized(snapshot) { snapshot.toSet() } }
-                .orEmpty()
-        pruneStaging(pluginId, devRoot, preserved)
+        pruneStaging(pluginId, devRoot, preservedPathsSnapshot(pluginId))
 
         logger.info(
             LogCategory.SYSTEM,
@@ -296,6 +290,16 @@ object DevPluginReloader {
             }
         }
     }
+
+    /**
+     * A copy of [pluginId]'s session-preserved paths taken under the set's monitor. [pruneStaging]
+     * deletes everything not exempt, so it needs a stable copy rather than a live view another
+     * caller could mutate mid-iteration.
+     */
+    private fun preservedPathsSnapshot(pluginId: String): Set<String> =
+        sessionPreservedPaths[pluginId]
+            ?.let { recorded -> synchronized(recorded) { recorded.toSet() } }
+            .orEmpty()
 
     /**
      * Records staging JAR paths to preserve for [pluginId] across the 3-version staging
