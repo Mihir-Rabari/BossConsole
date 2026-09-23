@@ -206,10 +206,11 @@ class MasteryExecutorTest {
 
             val events = executor.execute(mastery, emptyMap()).toList()
 
-            assertEquals(2, events.size)
-            assertIs<MasteryProgress.Started>(events[0])
-            val failed = assertIs<MasteryProgress.Failed>(events[1])
+            // Refused at the load seam (#1514) before Started: a single Failed verdict,
+            // and the stream completes instead of dying.
+            assertEquals(1, events.size)
+            val failed = assertIs<MasteryProgress.Failed>(events[0])
             assertTrue(failed.error.contains("Cycle detected"), failed.error)
-            assertEquals("", failed.failedNodeId)
+            assertEquals("cyclic", failed.failedNodeId)
         }
 }

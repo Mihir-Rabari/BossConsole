@@ -420,11 +420,23 @@ private fun validateDefinition(request: PMasteryDef) {
  * Rejects structurally invalid DAGs: blank, reserved ("INPUT") or duplicate node ids,
  * unknown edge endpoints, and cycles.
  */
+
+/** First few offenders, capped: this text rides the percent-encoded grpc-message trailer. */
+private fun Collection<String>.asOffenders(): String = take(5).joinToString().take(200)
+
 private fun validateDagStructure(request: PMasteryDef) {
     val nodeIds = request.nodesList.map { it.id }
     validateArgument(nodeIds.all { it.isNotBlank() }) { "Mastery node ids must not be blank" }
     validateArgument(nodeIds.none { it == "INPUT" }) {
         "Mastery node id \"INPUT\" is reserved for the mastery input and cannot be used"
+    }
+    validateArgument(nodeIds.all { it.length <= 200 }) {
+        "Mastery node ids exceed the size limit"
+    }
+    // inputMapping sources split at the first dot, so a dotted id could never be named as a
+    // data source: accepted at create, silently unmapped at execute.
+    validateArgument(nodeIds.none { '.' in it }) {
+        "Mastery node ids must not contain '.'"
     }
     val duplicateIds =
         nodeIds
@@ -433,7 +445,7 @@ private fun validateDagStructure(request: PMasteryDef) {
             .filterValues { it > 1 }
             .keys
     validateArgument(duplicateIds.isEmpty()) {
-        "Duplicate mastery node ids: ${duplicateIds.joinToString()}"
+        "Duplicate mastery node ids: ${duplicateIds.asOffenders()}"
     }
     val unknownSources =
         request.edgesList
@@ -441,7 +453,7 @@ private fun validateDagStructure(request: PMasteryDef) {
             .filter { it != "INPUT" && it !in nodeIds }
             .distinct()
     validateArgument(unknownSources.isEmpty()) {
-        "Mastery edges reference unknown source node ids: ${unknownSources.joinToString()}"
+        "Mastery edges reference unknown source node ids: ${unknownSources.asOffenders()}"
     }
     val unknownTargets =
         request.edgesList
@@ -449,7 +461,7 @@ private fun validateDagStructure(request: PMasteryDef) {
             .filter { it !in nodeIds }
             .distinct()
     validateArgument(unknownTargets.isEmpty()) {
-        "Mastery edges reference unknown target node ids: ${unknownTargets.joinToString()}"
+        "Mastery edges reference unknown target node ids: ${unknownTargets.asOffenders()}"
     }
     val dagError: String? =
         try {
@@ -465,7 +477,7 @@ private fun validateDagStructure(request: PMasteryDef) {
             )
             null
         } catch (e: IllegalArgumentException) {
-            e.message ?: "Mastery definition contains a cycle"
+            e.message?.take(200) ?: "Mastery definition contains a cycle"
         }
     validateArgument(dagError == null) { "Mastery definition is not a valid DAG: $dagError" }
 }

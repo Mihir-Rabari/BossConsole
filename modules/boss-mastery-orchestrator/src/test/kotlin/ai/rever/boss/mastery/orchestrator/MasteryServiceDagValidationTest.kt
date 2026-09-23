@@ -86,6 +86,39 @@ class MasteryServiceDagValidationTest {
         }
 
     @Test
+    fun `createMastery rejection text stays small when offender ids are huge`() =
+        runTest {
+            val service = service()
+            // Node ids are caller-controlled and ride the percent-encoded grpc-message
+            // trailer, so the description must stay far under the transport's header cap.
+            val huge = "x".repeat(190)
+            val failure =
+                assertFailsWith<StatusRuntimeException> {
+                    service.createMastery(definition(nodes = (1..40).map { node(huge) }))
+                }
+            assertEquals(Status.Code.INVALID_ARGUMENT, failure.status.code)
+            val description = failure.status.description.orEmpty()
+            assertTrue(description.contains("Duplicate"), description)
+            assertTrue(description.length <= 260, "description was ${description.length} chars")
+        }
+
+    @Test
+    fun `createMastery rejects node ids containing a dot`() =
+        runTest {
+            val service = service()
+            val failure =
+                assertFailsWith<StatusRuntimeException> {
+                    service.createMastery(definition(nodes = listOf(node("a.b"))))
+                }
+            assertEquals(Status.Code.INVALID_ARGUMENT, failure.status.code)
+            assertTrue(
+                failure.status.description
+                    .orEmpty()
+                    .contains("'.'"),
+            )
+        }
+
+    @Test
     fun `createMastery rejects a node named INPUT`() =
         runTest {
             val service = service()
