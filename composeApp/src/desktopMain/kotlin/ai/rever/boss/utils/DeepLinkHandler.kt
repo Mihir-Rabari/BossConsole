@@ -25,7 +25,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.awt.Desktop
 import java.io.File
-import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
 
@@ -925,73 +924,4 @@ actual object DeepLinkHandler {
             logger.warn(LogCategory.SYSTEM, "Error decoding URL", error = e)
             this
         }
-
-    actual fun extractVerificationToken(uri: String): String? {
-        // Extract token from URLs like: boss://auth/verify#access_token=xxx or boss://auth/verify?token=xxx
-        return try {
-            val url = URI(uri)
-
-            // First try URL fragment (after #) - this is what Supabase sends
-            val fragment = url.fragment
-            if (fragment != null) {
-                val params =
-                    fragment.split("&").associate {
-                        val parts = it.split("=", limit = 2)
-                        if (parts.size == 2) parts[0] to parts[1] else parts[0] to ""
-                    }
-                // Return access_token from Supabase success redirect
-                params["access_token"]?.let { return it }
-            }
-
-            // Fallback: try query parameters (after ?) for manual token input
-            val query = url.query
-            if (query != null) {
-                val params =
-                    query.split("&").associate {
-                        val parts = it.split("=", limit = 2)
-                        if (parts.size == 2) parts[0] to parts[1] else parts[0] to ""
-                    }
-                return params["token"]
-            }
-
-            null
-        } catch (e: Exception) {
-            logger.warn(LogCategory.AUTH, "Error extracting verification token", error = e)
-            null
-        }
-    }
-
-    actual fun extractVerificationType(uri: String): String? {
-        // Extract type from URLs like: boss://auth/verify#access_token=xxx&type=recovery
-        return try {
-            val url = URI(uri)
-
-            // First try URL fragment (after #) - this is what Supabase sends
-            val fragment = url.fragment
-            if (fragment != null) {
-                val params =
-                    fragment.split("&").associate {
-                        val parts = it.split("=", limit = 2)
-                        if (parts.size == 2) parts[0] to parts[1] else parts[0] to ""
-                    }
-                params["type"]?.let { return it }
-            }
-
-            // Fallback: try query parameters (after ?)
-            val query = url.query
-            if (query != null) {
-                val params =
-                    query.split("&").associate {
-                        val parts = it.split("=", limit = 2)
-                        if (parts.size == 2) parts[0] to parts[1] else parts[0] to ""
-                    }
-                return params["type"]
-            }
-
-            null
-        } catch (e: Exception) {
-            logger.warn(LogCategory.AUTH, "Error extracting verification type", error = e)
-            null
-        }
-    }
 }
