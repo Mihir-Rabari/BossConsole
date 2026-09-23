@@ -55,6 +55,24 @@ class McpSessionGuardTest {
     }
 
     @Test
+    fun `pause brakes high-risk names the mutating catalog does not list`() {
+        val guard = McpSessionGuard()
+        guard.setPaused(true)
+
+        // docker_run is CRITICAL by name in the risk evaluator but matches no
+        // KNOWN_MUTATING_TOOLS entry or suffix, and an honest provider may declare it
+        // readOnly = true. Classification is the shared predicate, so the paused bucket
+        // matches the policy engine's ASK bucket and the brake still wins.
+        assertNull(guard.tryAcquire("docker_run", declaredReadOnly = true))
+        assertNull(guard.tryAcquire("secret_create", declaredReadOnly = true))
+        assertTrue(guard.blockIfPaused("k8s_use_context", declaredReadOnly = true))
+
+        val state = guard.state.value
+        assertEquals(0, state.inFlightMutatingActions)
+        assertEquals(3L, state.blockedMutatingActions)
+    }
+
+    @Test
     fun `pause reports admitted work as finishing and rejects later admissions`() {
         val guard = McpSessionGuard()
         val admitted = assertNotNull(guard.tryAcquire("env_sync", declaredReadOnly = false))

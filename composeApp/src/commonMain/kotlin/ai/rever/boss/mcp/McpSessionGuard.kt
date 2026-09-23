@@ -48,7 +48,7 @@ internal class McpSessionGuard {
         toolName: String,
         declaredReadOnly: Boolean?,
     ): Boolean {
-        if (!McpMutatingToolCatalog.isMutating(toolName, declaredReadOnly)) return false
+        if (!McpMutatingToolCatalog.isMutationClassified(toolName, declaredReadOnly)) return false
         return synchronized(lock) {
             if (!_state.value.mutatingActionsPaused) return@synchronized false
             recordBlocked()
@@ -63,7 +63,7 @@ internal class McpSessionGuard {
         toolName: String,
         declaredReadOnly: Boolean?,
     ): McpSessionGuardPermit? {
-        if (!McpMutatingToolCatalog.isMutating(toolName, declaredReadOnly)) {
+        if (!McpMutatingToolCatalog.isMutationClassified(toolName, declaredReadOnly)) {
             return McpSessionGuardPermit()
         }
         return synchronized(lock) {

@@ -2178,8 +2178,11 @@ final approval boundary, including queued once/session/persistent grants. Calls 
 authorized to execute are not cancelled. Reset remains host UI only, not an MCP tool.
 
 The activity log's **Session Action Guard** is a process-wide, session-scoped emergency brake for
-new mutating calls. It uses the same fail-closed name/declaration OR as policy classification, so a
-provider cannot bypass it by marking `k8s_delete` read-only and an honestly declared mutation with
+new mutating calls. It classifies through the SAME predicate as policy classification
+(`McpMutatingToolCatalog.isMutationClassified`: assessed risk HIGH-or-worse, or the fail-closed
+name/declaration catalog), so the paused bucket and the ASK bucket cannot drift apart - a tool like
+`docker_run` that is CRITICAL by name but matches no catalog entry is still braked, a provider
+cannot bypass the guard by marking `k8s_delete` read-only, and an honestly declared mutation with
 an innocent name is still covered. An already-paused call is refused before policy authorization so it
 does not open an approval prompt; the registry checks again after any queued approval, immediately
 before handler admission, so pausing while a dialog is open still wins. Admission and pause share
