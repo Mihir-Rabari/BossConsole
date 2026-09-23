@@ -85,7 +85,7 @@ tasks.withType<Test> {
 
     // Same test-home redirect as plugin-path-utils: RemotePluginRepository's default
     // PluginDownloadCache resolves BossDirectories.resolve("plugin-cache") and creates it, so
-    // without this the suite made the developer's real ~/.boss/plugin-cache (#818).
+    // without this the suite creates the developer's real ~/.boss/plugin-cache (#818).
     val testHome =
         layout.buildDirectory
             .dir("test-home/$name")
