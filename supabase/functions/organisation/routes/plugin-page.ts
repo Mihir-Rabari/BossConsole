@@ -68,12 +68,24 @@ pluginPageRoutes.get("/o/:slug/plugins/:pluginId", async (ctx) => {
   // gets, for the same reason join renders one page for every unusable invite: a distinct 429
   // would tell a script it was going fast enough to matter, and would separate "too many" from
   // "not yours to see" - which is a signal on its own.
+  const key = clientKey(ctx.req.raw.headers)
   const limit = rateLimit(
-    `pluginpage:${clientKey(ctx.req.raw.headers)}`,
+    `pluginpage:${key}`,
     PAGE_LIMIT,
     PAGE_WINDOW_SECONDS,
   )
-  if (!limit.allowed) return notAvailable()
+  if (!limit.allowed) {
+    // A throttle decided on the "unknown" key means the gateway set no
+    // client-IP header and the whole world shares one bucket - a
+    // misconfiguration, not an attack. The 404 stays silent to the caller,
+    // but the operator gets one grep-able line.
+    if (key === "unknown") {
+      console.debug(
+        "plugin-page throttled on the shared unknown key: no client-IP header reached the function",
+      )
+    }
+    return notAvailable()
+  }
 
   // NO SESSION IS REQUIRED TO READ THIS PAGE, and that is a deliberate widening of the rule the
   // rest of these pages follow.

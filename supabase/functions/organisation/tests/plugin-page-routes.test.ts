@@ -267,6 +267,20 @@ Deno.test("a human reader stays well inside the cap, with no session", async () 
   }
 })
 
+Deno.test("the cap is per client, not a global budget", async () => {
+  // Every other rate-limit test here sends header-less requests, so they all
+  // share the "unknown" bucket: a regression that dropped clientKey from the
+  // bucket key (making the cap global) would pass them all. Exhaust one
+  // identified client's budget, then prove another still renders.
+  const { restore } = setup()
+  try {
+    for (let i = 0; i < 31; i++) await get(PATH, { "x-forwarded-for": "198.51.100.7" })
+    assertEquals((await get(PATH, { "x-forwarded-for": "203.0.113.9" })).status, 200)
+  } finally {
+    restore()
+  }
+})
+
 /** Blank the per-response CSP nonce so two pages can be compared. */
 function stripNonce(html: string): string {
   return html.replace(/nonce="[A-Za-z0-9_-]+"/g, 'nonce="N"')
