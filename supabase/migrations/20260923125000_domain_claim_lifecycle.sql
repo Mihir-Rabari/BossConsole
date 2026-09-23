@@ -116,6 +116,9 @@ ALTER FUNCTION "public"."trigger_cleanup_expired_unverified_organisation_domains
 
 COMMENT ON FUNCTION "public"."trigger_cleanup_expired_unverified_organisation_domains"() IS 'Trigger function: after each insert into organisation_domains, 10% of the time deletes unverified claims older than 7 days, mirroring trigger_cleanup_expired_challenges (20251023000007 / 20260916130000).';
 
+DROP TRIGGER IF EXISTS "trigger_cleanup_expired_unverified_organisation_domains"
+    ON "public"."organisation_domains";
+
 CREATE TRIGGER "trigger_cleanup_expired_unverified_organisation_domains"
     AFTER INSERT ON "public"."organisation_domains"
     FOR EACH ROW EXECUTE FUNCTION "public"."trigger_cleanup_expired_unverified_organisation_domains"();
@@ -224,4 +227,13 @@ COMMENT ON TABLE "public"."organisation_domains" IS 'Email domains claimed by an
 
 -- 6. One-time sweep, so domains squatted under the old rules are freed the
 --    moment this migration deploys rather than at the first 10%-trigger fire.
-SELECT public.cleanup_expired_unverified_organisation_domains();
+--    The count lands in the deploy log: a bare SELECT would discard it, and
+--    this sweep is the irreversible one.
+DO $$
+DECLARE
+    v_deleted INTEGER;
+BEGIN
+    v_deleted := public.cleanup_expired_unverified_organisation_domains();
+    RAISE NOTICE 'domain claim lifecycle: one-time sweep deleted % expired unverified claim(s)', v_deleted;
+END;
+$$;

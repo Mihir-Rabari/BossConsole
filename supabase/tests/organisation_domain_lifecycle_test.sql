@@ -1,4 +1,4 @@
--- pgTAP tests for the unverified-domain-claim lifecycle (20260918120000,
+-- pgTAP tests for the unverified-domain-claim lifecycle (20260923125000,
 -- BossConsole#966).
 --
 -- Before that migration, organisation_domains.domain was globally UNIQUE and
