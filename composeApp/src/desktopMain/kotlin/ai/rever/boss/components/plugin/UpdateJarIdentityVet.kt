@@ -67,7 +67,7 @@ internal object UpdateJarIdentityVet {
             return Result.failure(
                 IllegalStateException(
                     "The update for $pluginId did not install as $pluginId: " +
-                        refusalReason(declaredId) + ". The store entry may be wrong; the " +
+                        refusalReason(declaredId, protectedIds) + ". The store entry may be wrong; the " +
                         "running version was kept.",
                     cause,
                 ),
@@ -76,13 +76,16 @@ internal object UpdateJarIdentityVet {
         return Result.success(Unit)
     }
 
-    private fun refusalReason(declaredId: String?): String =
+    private fun refusalReason(
+        declaredId: String?,
+        protectedIds: Set<String>,
+    ): String =
         when {
             declaredId == null -> {
                 "its manifest could not be read"
             }
 
-            declaredId in PluginDependencyResolution.NOT_USER_INSTALLABLE -> {
+            declaredId in protectedIds -> {
                 "it declares the protected id \"$declaredId\""
             }
 

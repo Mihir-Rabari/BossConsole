@@ -909,11 +909,13 @@ class DynamicPluginManager(
                         return Result.failure(it)
                     }
                     // If the swap's snapshot contained the api plugin, it was
-                    // already reloaded — return that entry. The update bridge
-                    // however UNINSTALLS the api plugin before handing us the
-                    // new jar, so the snapshot may have lacked it: fall through
-                    // to a normal install (versions are now equal, so the
-                    // trigger won't re-fire) to (re)create the plugin entry.
+                    // already reloaded - return that entry. Store updates can no
+                    // longer reach this route (the update bridge never offers a
+                    // protected id, and UpdateJarIdentityVet refuses such a jar),
+                    // but a deferred-restart snapshot may still lack the api
+                    // plugin: fall through to a normal install (versions are now
+                    // equal, so the trigger won't re-fire) to (re)create the
+                    // plugin entry.
                     getPluginInfo(ai.rever.boss.plugin.loader.ApiClassLoader.API_PLUGIN_ID)
                         ?.let { return Result.success(it) }
                 }
