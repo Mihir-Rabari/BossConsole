@@ -63,6 +63,9 @@ actual object PluginUpdateBridge {
         )
     }
 
+    // Guard returns preserve the protected-id short-circuit and the uninitialized-store
+    // failure as distinct outcomes before any store traffic.
+    @Suppress("ReturnCount")
     actual suspend fun checkOne(ref: InstalledPluginRef): UpdateCheckOutcome {
         if (ref.pluginId in PluginDependencyResolution.NOT_USER_INSTALLABLE) {
             // A protected id can never take a store update (the vet refuses the
