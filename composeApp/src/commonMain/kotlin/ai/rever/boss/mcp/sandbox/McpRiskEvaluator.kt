@@ -26,72 +26,38 @@ class DefaultMcpRiskEvaluator : McpRiskEvaluator {
 
         return when {
             // Shell / Command execution
-            normalizedName in SHELL_TOOLS -> {
-                evaluateShellCommand(normalizedName, args)
-            }
+            normalizedName in SHELL_TOOLS -> evaluateShellCommand(normalizedName, args)
 
             // Workspace lifecycle mutations
-            normalizedName in WORKSPACE_MUTATION_TOOLS -> {
-                McpRiskAssessment(
-                    level = McpRiskLevel.HIGH,
-                    reason = "Workspace lifecycle mutation '$toolName'",
-                )
-            }
+            normalizedName in WORKSPACE_MUTATION_TOOLS ->
+                McpRiskAssessment(McpRiskLevel.HIGH, "Workspace lifecycle mutation '$toolName'")
 
             // Secrets access
-            normalizedName == "secret_get" -> {
-                McpRiskAssessment(
-                    level = McpRiskLevel.CRITICAL,
-                    reason = "Accessing plaintext secret credentials via '$toolName'",
-                )
-            }
+            normalizedName == "secret_get" ->
+                McpRiskAssessment(McpRiskLevel.CRITICAL, "Accessing plaintext secret credentials via '$toolName'")
 
-            normalizedName in SECRET_MANAGEMENT_TOOLS -> {
-                McpRiskAssessment(
-                    level = McpRiskLevel.HIGH,
-                    reason = "Credential vault operation via '$toolName'",
-                )
-            }
+            normalizedName in SECRET_MANAGEMENT_TOOLS ->
+                McpRiskAssessment(McpRiskLevel.HIGH, "Credential vault operation via '$toolName'")
 
             // Docker infrastructure mutations
-            normalizedName in DOCKER_DESTRUCTIVE_TOOLS -> {
-                McpRiskAssessment(
-                    level = McpRiskLevel.CRITICAL,
-                    reason = "Docker infrastructure mutation '$toolName'",
-                )
-            }
+            normalizedName in DOCKER_DESTRUCTIVE_TOOLS ->
+                McpRiskAssessment(McpRiskLevel.CRITICAL, "Docker infrastructure mutation '$toolName'")
 
             // Destructive Kubernetes / Helm infrastructure operations
-            normalizedName in K8S_DESTRUCTIVE_TOOLS -> {
-                McpRiskAssessment(
-                    level = McpRiskLevel.CRITICAL,
-                    reason = "Kubernetes/Helm mutation '$toolName'",
-                )
-            }
+            normalizedName in K8S_DESTRUCTIVE_TOOLS ->
+                McpRiskAssessment(McpRiskLevel.CRITICAL, "Kubernetes/Helm mutation '$toolName'")
 
             // File / Codebase write or delete operations
-            normalizedName in FILE_WRITE_TOOLS -> {
-                McpRiskAssessment(
-                    level = McpRiskLevel.HIGH,
-                    reason = "File system write operation via '$toolName'",
-                )
-            }
+            normalizedName in FILE_WRITE_TOOLS ->
+                McpRiskAssessment(McpRiskLevel.HIGH, "File system write operation via '$toolName'")
 
             // Read-only / safe tools
-            normalizedName in READ_ONLY_TOOLS -> {
-                McpRiskAssessment(
-                    level = McpRiskLevel.LOW,
-                    reason = "Read-only tool (returned data may be sensitive) '$toolName'",
-                )
-            }
+            normalizedName in READ_ONLY_TOOLS ->
+                McpRiskAssessment(McpRiskLevel.LOW, "Read-only tool (returned data may be sensitive) '$toolName'")
 
             // Unknown / unclassified tools default to LOW
-            else -> {
-                McpRiskAssessment(
-                    level = McpRiskLevel.LOW,
-                    reason = "Unclassified tool '$toolName' - defaulting to low risk",
-                )
-            }
+            else ->
+                McpRiskAssessment(McpRiskLevel.LOW, "Unclassified tool '$toolName' - defaulting to low risk")
         }
     }
 
