@@ -1,5 +1,5 @@
 -- pgTAP tests for the at-rest storage form of plugin-store API key material
--- (20260920000000_plugin_api_key_storage_form).
+-- (20260923123000_plugin_api_key_storage_form).
 -- Run with: supabase test db
 --
 -- The edge function has always hashed keys before INSERT and stored only a
@@ -304,3 +304,4 @@ select ok(
 );
 
 select * from finish();
+rollback;
