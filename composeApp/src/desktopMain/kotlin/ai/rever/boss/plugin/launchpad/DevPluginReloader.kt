@@ -123,7 +123,10 @@ object DevPluginReloader {
 
         // Snapshot under the set's monitor: pruneStaging deletes everything not exempt, so it
         // needs a stable copy rather than a live view another caller could mutate mid-iteration.
-        val preserved = sessionPreservedPaths[pluginId]?.let { snapshot -> synchronized(snapshot) { snapshot.toSet() } }.orEmpty()
+        val preserved =
+            sessionPreservedPaths[pluginId]
+                ?.let { snapshot -> synchronized(snapshot) { snapshot.toSet() } }
+                .orEmpty()
         pruneStaging(pluginId, devRoot, preserved)
 
         logger.info(
