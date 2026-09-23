@@ -54,11 +54,15 @@ class IpcTransportLimitsTest {
     @Test
     fun `oversized request is refused with a protocol level error and later traffic is unaffected`() =
         runBlocking {
-            IpcTestServer(EventBusServiceImpl()).use { host ->
+            // The cap is pinned BELOW gRPC's 4MiB library default on purpose: a payload sized
+            // against the default would be refused by the library even if the explicit pin were
+            // removed, and this test would pass while the bound it guards was gone.
+            val serverLimits = IpcTransportLimits(maxInboundMessageBytes = 65_536)
+            IpcTestServer(EventBusServiceImpl(), limits = serverLimits).use { host ->
                 val channel = host.channelFor("large-writer")
                 val stub = EventBusServiceGrpcKt.EventBusServiceCoroutineStub(channel)
                 val oversizePayload =
-                    ByteString.copyFrom(ByteArray(IpcTransportLimits.DEFAULT_MAX_INBOUND_MESSAGE_BYTES + 1))
+                    ByteString.copyFrom(ByteArray(serverLimits.maxInboundMessageBytes + 1))
                 val oversize =
                     EventEnvelope
                         .newBuilder()
@@ -102,15 +106,21 @@ class IpcTransportLimitsTest {
     fun `oversized response is refused at the child reader and later reads are unaffected`() =
         runBlocking {
             val state = StateServiceImpl()
+            // The reader's cap is pinned BELOW the library default for the same reason as the
+            // request test: removing the explicit pin must change this test's outcome.
+            val readerLimits = IpcTransportLimits(maxInboundMessageBytes = 65_536)
             IpcTestServer(state).use { host ->
                 // Local host writes bypass the request wire, so only the oversized response crosses a transport.
                 state.setLocal(
                     "big",
-                    ByteArray(IpcTransportLimits.DEFAULT_MAX_INBOUND_MESSAGE_BYTES + 1),
+                    ByteArray(readerLimits.maxInboundMessageBytes + 1),
                     "octet-stream",
                 )
                 state.setLocal("small", "fine".toByteArray(), "text")
-                val reader = StateServiceGrpcKt.StateServiceCoroutineStub(host.channelFor("large-reader"))
+                val reader =
+                    StateServiceGrpcKt.StateServiceCoroutineStub(
+                        host.channelFor("large-reader", clientLimits = readerLimits),
+                    )
 
                 val refusal =
                     assertFailsWith<StatusException> {
