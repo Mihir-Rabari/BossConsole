@@ -593,14 +593,18 @@ object UpdateInstaller {
                 mountTest.waitFor()
 
                 if (mountTest.exitValue() != 0) {
-                    logger.error(LogCategory.SYSTEM, "DMG mounting failed")
+                    val output = runCatching { mountOutputFuture.get(1, TimeUnit.SECONDS) }.getOrNull()
+                    logger.error(LogCategory.SYSTEM, "DMG mounting failed: ${output?.take(500)}")
                     return@withContext InstallResult.Error("Failed to mount DMG for verification")
                 }
 
                 // Find the mounted volume from what hdiutil itself reported about
                 // this attach, not by grabbing the first BOSS-named directory
                 // under /Volumes (Issue #922).
-                val mountedVolume = findMountedBossVolume(mountOutputFuture.get(1, TimeUnit.SECONDS))
+                // A drain hiccup must not leak the mount we just attached: get() throws
+                // outside the unmount guard, so degrade to the directory fallback instead.
+                val mountOutput = runCatching { mountOutputFuture.get(1, TimeUnit.SECONDS) }.getOrNull()
+                val mountedVolume = findMountedBossVolume(mountOutput)
                 if (mountedVolume == null) {
                     logger.error(LogCategory.SYSTEM, "Could not find mounted BOSS volume")
                     cleanupDMG(null) // Try to cleanup any stray mounts

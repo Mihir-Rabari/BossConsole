@@ -339,6 +339,7 @@ object UpdateScriptGenerator {
             MOUNT_OUTPUT=${'$'}(hdiutil attach $escapedDmgPath -nobrowse)
             if [ ${'$'}? -ne 0 ]; then
                 echo "Failed to mount DMG"
+                echo "${'$'}MOUNT_OUTPUT"
                 # Fallback: Open DMG for manual installation (using escaped path)
                 open $escapedDmgPath
                 exit 1
@@ -358,6 +359,9 @@ object UpdateScriptGenerator {
             VOLUME=${'$'}(printf '%s\n' "${'$'}MOUNT_OUTPUT" | grep '/Volumes/' | tail -n 1 | awk -F '\t' '{print ${'$'}NF}')
             if [ -z "${'$'}VOLUME" ] || [ ! -d "${'$'}VOLUME" ]; then
                 echo "Could not identify the volume this DMG mounted at - refusing to guess"
+                # The update now fails closed on a parse miss, so this log is the
+                # only record of what hdiutil actually printed.
+                echo "${'$'}MOUNT_OUTPUT"
                 # Try to open DMG manually (using escaped path)
                 open $escapedDmgPath
                 exit 1
