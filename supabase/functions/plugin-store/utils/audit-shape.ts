@@ -71,11 +71,16 @@ function isIPv6(candidate: string): boolean {
 }
 
 /**
- * The address to persist in the audit trail, taken only from hops the edge
- * trusts: cf-connecting-ip (set by the CDN in front of the API), else the
- * RIGHTMOST x-forwarded-for entry (trusted proxies append on the right; the
- * leftmost is whatever the caller typed). Anything that is not address-shaped
- * persists as null — an absent fact, never a fabricated one.
+ * The address to persist in the audit trail, taken from the hops the edge is
+ * expected to have set: cf-connecting-ip first, else the RIGHTMOST
+ * x-forwarded-for entry (trusted proxies append on the right; the leftmost
+ * is whatever the caller typed). TRUST ASSUMPTION, stated rather than
+ * implied: cf-connecting-ip is only CDN-set on the api.risaboss.com route -
+ * on the *.supabase.co route it is just a client header, so there it narrows
+ * a spoof to an address-shaped string rather than eliminating it (the same
+ * assumption the sibling crash-report function documents). Anything that is
+ * not address-shaped persists as null — an absent fact, never a fabricated
+ * one.
  */
 export function auditClientIp(
   cfConnectingIp: string | null | undefined,
@@ -94,6 +99,19 @@ export function auditClientIp(
 }
 
 /**
+ * Truncate without splitting a surrogate pair: a slice that ends on a lone
+ * high surrogate is not text, and an unpaired surrogate serialized into the
+ * audit payload is rejected by Postgres's JSON input - which the audit
+ * caller's catch swallows, so the row would silently never be written.
+ */
+function truncateWellFormed(value: string, max: number): string {
+  if (value.length <= max) return value
+  const cut = value.slice(0, max)
+  const last = cut.charCodeAt(max - 1)
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, max - 1) : cut
+}
+
+/**
  * Bounded, control-char-free user agent, or null. The UA exists in the audit
  * trail "for debugging CI/CD issues"; a real one fits in 256 chars, and one
  * that does not is a text channel, not a UA.
@@ -102,7 +120,7 @@ export function auditUserAgent(userAgent: string | null | undefined): string | n
   if (!userAgent) return null
   const shaped = stripControlChars(userAgent).trim()
   if (!shaped) return null
-  return shaped.length > AUDIT_USER_AGENT_MAX ? shaped.slice(0, AUDIT_USER_AGENT_MAX) : shaped
+  return truncateWellFormed(shaped, AUDIT_USER_AGENT_MAX)
 }
 
 /**
@@ -134,5 +152,5 @@ export function auditErrorMessage(message: string | null | undefined): string | 
   if (!message) return null
   const shaped = stripControlChars(message).trim()
   if (!shaped) return null
-  return shaped.length > AUDIT_ERROR_MESSAGE_MAX ? shaped.slice(0, AUDIT_ERROR_MESSAGE_MAX) : shaped
+  return truncateWellFormed(shaped, AUDIT_ERROR_MESSAGE_MAX)
 }

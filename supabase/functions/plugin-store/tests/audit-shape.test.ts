@@ -283,3 +283,15 @@ Deno.test("logApiKeyAction still swallows persistence failures so audits never f
   await logApiKeyAction(failing, KEY_ID, "publish", "ai.rever.boss.form-assist", request({}))
   // Reaching here without throwing is the invariant.
 })
+
+Deno.test("a user agent truncated mid surrogate pair stays well-formed", () => {
+  // 255 ASCII chars + one non-BMP char: a code-unit slice would leave a lone
+  // high surrogate, which Postgres's JSON input rejects - and the audit
+  // caller swallows that rejection, so the row would silently never exist.
+  const ua = "A".repeat(255) + "\u{1F600}" + "tail"
+  const shaped = auditUserAgent(ua)
+  assert(shaped !== null)
+  assert(shaped.length <= 256)
+  const last = shaped.charCodeAt(shaped.length - 1)
+  assert(!(last >= 0xd800 && last <= 0xdbff), "must not end on a lone high surrogate")
+})
