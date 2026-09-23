@@ -363,7 +363,12 @@ sealed class MasteryProgress {
         val nodeId: String,
         val error: String,
         val willRetry: Boolean,
-        /** 1-based ordinal of the failed attempt, so clients can report retry 2 of 5. */
+        /**
+         * 1-based ordinal of the failed attempt, ranging 1..maxRetries+1: a
+         * maxRetries = 5 node can emit 6. The denominator (maxRetries + 1 total
+         * attempts) is not carried on the wire, so clients that want to render
+         * "attempt 2 of 6" need maxRetries from the definition.
+         */
         val retryAttempt: Int,
     ) : MasteryProgress()
 

@@ -275,7 +275,12 @@ class MasteryServiceImpl(
                         ?: NodeStatus.newBuilder().setNodeId(progress.nodeId)
                 nodeStatuses[progress.nodeId] =
                     builder
-                        .setState("failed")
+                        // A failed ATTEMPT is not a failed node: while willRetry
+                        // is true the executor is in backoff (up to 5s) and the
+                        // node is still running. Marking it failed here would
+                        // contradict the overall "running" status for any poller
+                        // watching during the delay.
+                        .setState(if (progress.willRetry) "running" else "failed")
                         .setErrorMessage(progress.error)
                         .build()
             }
