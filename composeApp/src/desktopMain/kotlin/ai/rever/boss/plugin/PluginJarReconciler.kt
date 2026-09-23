@@ -2,6 +2,7 @@ package ai.rever.boss.plugin
 
 import ai.rever.boss.components.plugin.MicrokernelRuntime
 import ai.rever.boss.plugin.api.PluginManifest
+import ai.rever.boss.plugin.loader.ApiClassLoader
 import ai.rever.boss.plugin.loader.PluginBundledTrust
 import ai.rever.boss.plugin.loader.PluginClassLoader
 import ai.rever.boss.plugin.loader.PluginManifestReader
@@ -67,10 +68,12 @@ object PluginJarReconciler {
      * stale file lingers until the next reconcile.
      * [pluginIds] limits an in-session update to its own plugin. A full scan is startup-only:
      * other plugins may have staged newer JARs while their old JARs are still in use.
+     * [selectVerifiedApiJar] resolves the trust-gated api winner; injectable for tests.
      */
     fun reconcilePluginDir(
         pluginDir: File,
         pluginIds: Set<String>?,
+        selectVerifiedApiJar: (File) -> File? = { ApiClassLoader.selectApiJar(it)?.jar },
     ): ReconcileResult {
         val jars =
             pluginDir
@@ -88,6 +91,41 @@ object PluginJarReconciler {
 
         candidates.groupBy { it.manifest.pluginId }.forEach { (pluginId, group) ->
             val installedPath = installedByPluginId[pluginId]?.jarPath
+            if (pluginId == ApiClassLoader.API_PLUGIN_ID) {
+                // For the API layer an unverifiable jar must never win: the load-time trust
+                // gate refuses it, but this reconciler runs FIRST and would otherwise pick
+                // the newest jar by version and delete the verified older jar it shadows,
+                // leaving the host with no loadable API at all. Select only among jars the
+                // gate accepts; every rejected jar becomes a loser and is cleaned up here.
+                // When nothing verifies, touch nothing - an empty API layer is the loader's
+                // degraded state to own, not a reason to delete files.
+                val verifiedJar = selectVerifiedApiJar(pluginDir)
+                if (verifiedJar == null) {
+                    logger.warn(
+                        LogCategory.SYSTEM,
+                        "Skipping api jar reconciliation: no candidate passes the trust gate",
+                        mapOf("candidates" to group.joinToString { it.file.name }),
+                    )
+                    return@forEach
+                }
+                val winnerPath = verifiedJar.absolutePath
+                val winner = group.firstOrNull { it.file.absolutePath == winnerPath }
+                if (winner == null) {
+                    // The gate's scan and ours disagree (TOCTOU or naming mismatch); fail safe.
+                    logger.warn(
+                        LogCategory.SYSTEM,
+                        "Skipping api jar reconciliation: verified winner not in candidate set",
+                        mapOf("winner" to winnerPath),
+                    )
+                    return@forEach
+                }
+                winners.add(winner.file)
+                for (loser in group.filterNot { it.file == winner.file }) {
+                    reconcileLoser(pluginId, loser, winner, deleted, deferred)
+                }
+                repointInstalledEntry(pluginId, installedByPluginId[pluginId], winner)
+                return@forEach
+            }
             val unordered = group.any { Version.parse(it.manifest.version) == null }
             val persistedCandidate = group.firstOrNull { it.file.absolutePath == installedPath }
             val winner =
