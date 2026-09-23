@@ -45,6 +45,17 @@
 -- No new index: the gate filters a handful of rows per plugin that the
 -- existing idx_plugin_versions_latest (plugin_id, published_at DESC, id DESC)
 -- already locates.
+--
+-- PRE-DEPLOY AUDIT: jar_size is BIGINT DEFAULT 0 and nullable, so historical
+-- rows may carry a real sha with jar_size 0 or NULL. Under this gate those
+-- rows disappear from every consumer surface at once (and the reaper in
+-- functions/plugin-store/services/versions.ts now reaps their exact shape,
+-- so a republish of the same version string recovers the slot). Count them
+-- before pushing:
+--     select count(*) from public.plugin_versions
+--      where sha256 = 'pending' or jar_size is null or jar_size <= 0;
+-- If any count against rows whose artifact really exists is nonzero, gate
+-- the deploy on a backfill or a listed set of affected plugins.
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------

@@ -280,7 +280,9 @@ export async function finalizeVersion(
  * provably lapsed: published_at is the insert time, and once it is older than
  * the signed upload URL's TTL the original attempt can never finalize. A
  * finalized row, or a pending row still inside its upload window, is never
- * deleted. Returns true only when a row was actually removed.
+ * deleted. The match is the exact negation of the finalization gate, so a
+ * hidden row is always reapable. Returns true only when a row was actually
+ * removed.
  */
 export async function deleteStalePendingVersion(
   supabase: SupabaseClient,
@@ -295,8 +297,11 @@ export async function deleteStalePendingVersion(
     .delete()
     .eq('plugin_id', pluginUuid)
     .eq('version', version)
-    .eq('sha256', PENDING_SHA256)
-    .eq('jar_size', 0)
+    // The exact negation of the finalization gate in getLatestVersion /
+    // getVersion: a row the gate hides must also be reapable, or the version
+    // slot wedges forever - a real sha with jar_size 0/NULL is wreckage, not
+    // an in-flight state (finalize writes both columns in one UPDATE).
+    .or(`sha256.eq.${PENDING_SHA256},jar_size.is.null,jar_size.lte.0`)
     .lt('published_at', cutoff)
     .select('id')
 

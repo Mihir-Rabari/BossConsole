@@ -81,6 +81,10 @@ function stubClient(read: StubResult, deleted: StubResult = { data: null, error:
       recorded.filters.push({ op: "lt", column, value })
       return chain()
     },
+    or: (expr: string) => {
+      recorded.filters.push({ op: "or", column: "", value: expr })
+      return chain()
+    },
     order: (column: string, opts: { ascending: boolean }) => {
       recorded.order.push({ column, ascending: opts.ascending })
       return chain()
@@ -173,7 +177,7 @@ Deno.test("a pending version requested directly is refused (404 at the route), n
   assertEquals(await getVersion(client, PLUGIN_UUID, "3.0.0"), null)
 })
 
-Deno.test("deleteStalePendingVersion reaps only a stale, still-pending row", async () => {
+Deno.test("deleteStalePendingVersion reaps every row the finalization gate hides", async () => {
   const { client, recorded } = stubClient(
     { data: null, error: null },
     { data: [{ id: finalizedRow.id }], error: null },
@@ -183,19 +187,24 @@ Deno.test("deleteStalePendingVersion reaps only a stale, still-pending row", asy
 
   assert(recorded.deleted)
   assertEquals(recorded.table, "plugin_versions")
-  assertEquals(recorded.filters.slice(0, 4), [
+  assertEquals(recorded.filters.slice(0, 2), [
     { op: "eq", column: "plugin_id", value: PLUGIN_UUID },
     { op: "eq", column: "version", value: "2.0.0" },
-    { op: "eq", column: "sha256", value: PENDING_SHA256 },
-    { op: "eq", column: "jar_size", value: 0 },
   ])
+  // The exact negation of the gate: a hidden row (pending sha, or jar_size
+  // zero/NULL with a real sha) must be reapable, or the slot wedges forever.
+  assertEquals(recorded.filters[2], {
+    op: "or",
+    column: "",
+    value: `sha256.eq.${PENDING_SHA256},jar_size.is.null,jar_size.lte.0`,
+  })
 
   // The staleness cutoff is the signed upload URL's TTL ago: inside that
   // window the original attempt could still finalize, so the row is protected.
-  assertEquals(recorded.filters.length, 5)
-  assertEquals(recorded.filters[4].op, "lt")
-  assertEquals(recorded.filters[4].column, "published_at")
-  const cutoff = Date.parse(recorded.filters[4].value as string)
+  assertEquals(recorded.filters.length, 4)
+  assertEquals(recorded.filters[3].op, "lt")
+  assertEquals(recorded.filters[3].column, "published_at")
+  const cutoff = Date.parse(recorded.filters[3].value as string)
   const age = Date.now() - cutoff
   assert(age > PENDING_VERSION_STALE_MS - 10_000, `cutoff ${age}ms ago, expected ~${PENDING_VERSION_STALE_MS}ms`)
   assert(age < PENDING_VERSION_STALE_MS + 10_000, `cutoff ${age}ms ago, expected ~${PENDING_VERSION_STALE_MS}ms`)
