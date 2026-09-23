@@ -385,7 +385,11 @@ class WorkspaceManager(
             // Space was a built-in - which is the Save button not working. See
             // `mergeSavedWorkspaces`, which also says what becomes of a legacy file whose id IS a
             // built-in's.
-            _workspaces.value = mergeSavedWorkspaces(PredefinedWorkspaces.allWorkspaces, saved)
+            // Published under the mutation lock: a save, delete or MCP register admitted
+            // while the scan was reading disk must not be overwritten by the wholesale result.
+            mutations.withLock {
+                _workspaces.value = mergeSavedWorkspaces(PredefinedWorkspaces.allWorkspaces, saved)
+            }
         }
     }
 
@@ -671,10 +675,19 @@ class WorkspaceManager(
         // Space back, since a minted id exists only inside this list until the caller persists
         // it through its own file manager.
         val registered = workspace.withStableId()
-        val workspaces = _workspaces.value.toMutableList()
-        val existingIndex = workspaces.indexOfFirst { it.id == registered.id }
-        if (existingIndex >= 0) workspaces[existingIndex] = registered else workspaces.add(registered)
-        _workspaces.value = workspaces
+        // Under the same lock as every other registry mutation: an MCP create racing a
+        // delete or rename would otherwise read a stale list and write it back over the change.
+        // The mint and the returned Space stay synchronous - the caller persists the file
+        // through its own file manager and needs the id now - but the list update itself goes
+        // through the lock, so it cannot overwrite a concurrent mutation.
+        scope.launch {
+            mutations.withLock {
+                val workspaces = _workspaces.value.toMutableList()
+                val existingIndex = workspaces.indexOfFirst { it.id == registered.id }
+                if (existingIndex >= 0) workspaces[existingIndex] = registered else workspaces.add(registered)
+                _workspaces.value = workspaces
+            }
+        }
         return registered
     }
 
