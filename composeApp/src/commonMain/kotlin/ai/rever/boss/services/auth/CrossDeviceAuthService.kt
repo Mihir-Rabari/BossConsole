@@ -6,6 +6,7 @@ import ai.rever.boss.services.passkey.supabase.PasskeyAuthenticationResult
 import ai.rever.boss.services.supabase.CrossDeviceAuthenticationRequired
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 
 /**
@@ -42,6 +43,9 @@ internal object CrossDeviceAuthService {
                     }
                 },
             )
+        } catch (e: CancellationException) {
+            // A superseded attempt must die here - see PasskeyAuthService.authenticateWithPasskey.
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -86,6 +90,8 @@ internal object CrossDeviceAuthService {
 
             // Timeout reached
             Result.failure(Exception("Authentication timeout - QR code was not scanned within 2 minutes"))
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             logger.error(LogCategory.PASSKEY, "Error during authentication polling", error = e)
             Result.failure(e)
