@@ -294,7 +294,8 @@ class WorkspaceManager {
                     // session-set store and the Space-theme store. The scan is "every *.json",
                     // so without this each is deserialized as a Space on every launch, fails,
                     // and logs a warning for ever. The list lives in WorkspaceFileManagerCommon,
-                    // shared with the write-side guard, so the two cannot drift apart (#926).
+                    // shared with the write-side guard, which extends it with the session-record
+                    // spellings it must refuse too, so the two cannot drift apart (#926).
                     if (WorkspaceFileManagerCommon.isReservedDocumentFileName(fileInfo.fileName)) return@forEach
                     val workspace =
                         withContext(Dispatchers.IO) {

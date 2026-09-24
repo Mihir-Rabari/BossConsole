@@ -20,13 +20,15 @@ import kotlin.test.assertTrue
 /**
  * #926: the workspace MCP file tools take a caller-chosen id and derive the file it writes from
  * it, so an id spelled as a reserved store record's name - `Space_Themes` for the Space-theme
- * store, `Last_Session_Set` for the session-set record - must not overwrite the host's own
- * persisted files. `WorkspaceManager` skips those two files when it scans the workspaces
- * directory because they are not Spaces; these tests pin the mirror image of that skip on the
- * write side: every save route the provider has refuses an id that resolves onto them, and
- * nothing else changes - ordinary workspaces still save, and the near-miss spellings
- * (`.json`-suffixed, path-shaped) land on their own ordinary files or are refused before the
- * write, never on a record.
+ * store, `Last_Session_Set` for the session-set record, `Last_Session` for the legacy
+ * single-Space session record - must not overwrite the host's own persisted files. The write
+ * gate is shared with the import path (#964, #1643): the caller's own `.json` suffix is
+ * stripped, the name is derived with the same sanitiser the save uses, and the comparison is
+ * case-insensitive because APFS and NTFS fold case. `WorkspaceManager` skips the two document
+ * records when it scans the workspaces directory because they are not Spaces; these tests pin
+ * the mirror image of that skip on the write side: every save route the provider has refuses
+ * an id that resolves onto them, and nothing else changes - ordinary workspaces still save,
+ * and path-shaped spellings are refused before the write, never on a record.
  */
 class WorkspaceReservedStoreFilesTest {
     private val themeSentinel = """{"themes":{"space-1":"ocean"}}"""
@@ -105,16 +107,22 @@ class WorkspaceReservedStoreFilesTest {
         }
 
     @Test
-    fun `a json-suffixed id derives to its own file and never to a reserved one`() =
+    fun `a json-suffixed reserved name is refused like the bare id`() =
         runBlocking {
             seedReservedFiles()
+            // The load path treats a suffixed id as that file name, so the write gate answers
+            // the same question rather than the accidental `<id>.json.json` the raw id would
+            // produce (#964): the caller's own suffix is stripped before the check.
             val result = openWorkspace("""{"workspaceId":"Space_Themes.json","createIfAbsent":true}""")
-            // Not refused - the id derives to Space_Themes.json.json, its own ordinary file - but
-            // the theme store it shares a directory with is untouched.
-            assertFalse(result.isError, result.text)
-            assertTrue(File(workspaceDir, "Space_Themes.json.json").exists())
+            assertTrue(result.isError, "expected a refusal, got: ${result.text}")
+            assertTrue(result.text.contains("reserved"), result.text)
             assertEquals(themeSentinel, fileManager.loadDocument(SPACE_THEMES_FILE))
             assertEquals(sessionSentinel, fileManager.loadDocument(LAST_SESSION_SET_FILE))
+            assertEquals(
+                setOf(SPACE_THEMES_FILE, LAST_SESSION_SET_FILE),
+                workspaceDir.list()!!.toSet(),
+                "a refused id must leave the directory exactly as it was",
+            )
         }
 
     @Test
@@ -140,19 +148,21 @@ class WorkspaceReservedStoreFilesTest {
         }
 
     @Test
-    fun `the reserved-name gate refuses exactly the files the directory scan skips`() {
-        // Refused: the two reserved records, via the exact id that derives to each.
+    fun `the write gate refuses the scan's skips plus the session-record spellings`() {
+        // Refused: the two document records, via the exact id that derives to each.
         assertNotNull(WorkspaceMcpToolProvider.refusalForReservedStoreFile("Space_Themes"))
         assertNotNull(WorkspaceMcpToolProvider.refusalForReservedStoreFile("Last_Session_Set"))
+        // Refused: the caller's own .json suffix is stripped first (#964) - the load path
+        // treats a suffixed id as that file name, so the gate answers the same question.
+        assertNotNull(WorkspaceMcpToolProvider.refusalForReservedStoreFile("Space_Themes.json"))
+        // Refused: the single-Space session record's spellings, which the scan still loads
+        // as the real record but a caller-chosen id must not overwrite (#964, #1643).
+        assertNotNull(WorkspaceMcpToolProvider.refusalForReservedStoreFile("Last_Session"))
+        assertNotNull(WorkspaceMcpToolProvider.refusalForReservedStoreFile("last_session"))
         // Allowed: ordinary ids - this is the guard create_workspace's minted ids pass too.
         assertNull(WorkspaceMcpToolProvider.refusalForReservedStoreFile("workspace-1788000000001"))
         assertNull(WorkspaceMcpToolProvider.refusalForReservedStoreFile("workspace-disposable-123"))
-        // Allowed: a .json-suffixed id derives to a .json.json of its own, never the record.
-        assertNull(WorkspaceMcpToolProvider.refusalForReservedStoreFile("Space_Themes.json"))
-        // Allowed: Last_Session is the live last-session AUTOSAVE Space, not the session-set
-        // record - the manager's scan loads it, so the write side must not refuse it either.
-        assertNull(WorkspaceMcpToolProvider.refusalForReservedStoreFile("Last_Session"))
-        // The gate is the record files' exact names, not a substring match.
+        // The gate is the record files' names, not a substring match.
         assertFalse(WorkspaceFileManagerCommon.isReservedDocumentFileName("my_Space_Themes.json"))
         // ...but the SAME record in lower case is refused: APFS/NTFS fold case, so
         // space_themes.json IS Space_Themes.json there (#926).
@@ -161,7 +171,13 @@ class WorkspaceReservedStoreFilesTest {
         assertEquals(
             setOf(LAST_SESSION_SET_FILE, SPACE_THEMES_FILE),
             WorkspaceFileManagerCommon.reservedDocumentFileNames,
-            "the guard list must mirror the files WorkspaceManager's scan skips",
+            "the directory scan skips exactly the two document records",
+        )
+        assertEquals(
+            WorkspaceFileManagerCommon.reservedDocumentFileNames +
+                setOf("Last_Session.json", "last_session.json"),
+            WorkspaceFileManagerCommon.reservedRecordFileNames,
+            "the write gate extends the scan's skips with the session-record spellings (#964)",
         )
     }
 }

@@ -39,11 +39,11 @@ internal fun LayoutWorkspace.withStableId(): LayoutWorkspace = if (id.isBlank())
  * install wrote it under - the name `RecoveredSpacesRoundTripTest`'s fixture carries, so real
  * disks hold it. No constant exists for it because the running code reaches the file only
  * through `WorkspaceManager.loadedFileNames`; this gate needs it directly because it sits in
- * the same directory the MCP create path and an import write into - and on a case-insensitive
- * filesystem it
- * IS the file [WorkspaceFileManagerCommon.fileNameForId] of [LAST_SESSION_ID] resolves to.
+ * the same directory the MCP create path and an import write into - and so does
+ * [WorkspaceFileManagerCommon.reservedRecordFileNames] - and on a case-insensitive filesystem
+ * it IS the file [WorkspaceFileManagerCommon.fileNameForId] of [LAST_SESSION_ID] resolves to.
  */
-private const val LEGACY_LAST_SESSION_FILE = "Last_Session.json"
+internal const val LEGACY_LAST_SESSION_FILE = "Last_Session.json"
 
 /**
  * The reserved workspace-store file that saving a Space with caller-chosen id [id] would
@@ -69,22 +69,16 @@ private const val LEGACY_LAST_SESSION_FILE = "Last_Session.json"
  * reason above; on a case-SENSITIVE filesystem that makes the gate stricter than the collision,
  * which is the safe side to err on.
  *
- * Extend this set - and the scan's skips - together: a new reserved record is a name collision
- * here exactly when it is a skip there. It lives beside the scan's identity rules for that reason,
- * and because it is not the MCP path's alone: [withImportableId] asks it too.
+ * The list lives in [WorkspaceFileManagerCommon.reservedRecordFileNames] - the scan's skips
+ * plus the session-record spellings - so the MCP refusal and the import gate consult one list
+ * and cannot drift apart. A new DOCUMENT record joins it exactly when it becomes a scan skip;
+ * a session-record spelling joins it without one.
  */
 internal fun reservedWorkspaceStoreFileName(id: String): String? {
     val stem = id.removeSuffix(".json")
     if (stem.isEmpty()) return null
     val fileName = WorkspaceFileManagerCommon.fileNameForId(stem)
-    val reserved =
-        listOf(
-            LAST_SESSION_SET_FILE,
-            SPACE_THEMES_FILE,
-            LEGACY_LAST_SESSION_FILE,
-            WorkspaceFileManagerCommon.fileNameForId(LAST_SESSION_ID),
-        )
-    return reserved.firstOrNull { it.equals(fileName, ignoreCase = true) }
+    return WorkspaceFileManagerCommon.reservedRecordFileNames.firstOrNull { it.equals(fileName, ignoreCase = true) }
 }
 
 /**
