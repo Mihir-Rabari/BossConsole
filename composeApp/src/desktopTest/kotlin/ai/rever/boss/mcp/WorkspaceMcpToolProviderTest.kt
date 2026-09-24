@@ -311,7 +311,7 @@ class WorkspaceMcpToolProviderTest {
         }
 
     @Test
-    fun `open_workspace with createIfAbsent says the file was saved when the window never registers`() =
+    fun `open_workspace with createIfAbsent says the file was saved when the window never registers`(): Unit =
         runBlocking {
             WorkspaceMcpToolProvider.windowCreator = { "never-registers" }
             val core = createTestCore()

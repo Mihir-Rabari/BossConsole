@@ -112,7 +112,7 @@ class UpdateJarIdentityVetTest {
         }
 
     @Test
-    fun `a jar that is not there is rejected`() =
+    fun `a jar that is not there is rejected`(): Unit =
         withTempDir { dir ->
             val result = UpdateJarIdentityVet.vet(pluginId, File(dir, "absent.jar").absolutePath)
 
