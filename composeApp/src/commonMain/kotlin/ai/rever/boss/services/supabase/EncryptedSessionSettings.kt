@@ -9,6 +9,9 @@ import io.github.jan.supabase.auth.SettingsCodeVerifierCache
 import io.github.jan.supabase.auth.SettingsSessionManager
 import java.io.File
 import java.io.IOException
+import java.nio.file.FileAlreadyExistsException
+import java.nio.file.Files
+import java.nio.file.attribute.PosixFilePermissions
 import java.security.GeneralSecurityException
 import java.security.SecureRandom
 import java.util.Base64
@@ -35,9 +38,10 @@ private const val KEY_FILE_NAME = "session-store.key"
  * `~/.boss` directory whose files this app otherwise keeps owner-only.
  *
  * Storage, both files under the directory [createEncryptedSessionSettings] resolves:
- *  - `session-store.key` — a random 32-byte AES key, base64, created through
- *    [atomicWriteText] so it lands 0600 on POSIX from its first byte, same contract as every
- *    other state file (see `AtomicFileWrite.kt`);
+ *  - `session-store.key` — a random 32-byte AES key, base64, created exclusively
+ *    (`Files.createFile`, owner-only on POSIX from its first byte) so two processes starting
+ *    against the same directory cannot each generate a key and orphan the other's store,
+ *    then filled through [atomicWriteText] (see `AtomicFileWrite.kt`);
  *  - `session-store.enc` — one `base64(key):base64(iv + ciphertext)` line per entry, so
  *    even key names are opaque. Every persisted write draws a fresh 96-bit IV.
  *
@@ -48,8 +52,13 @@ private const val KEY_FILE_NAME = "session-store.key"
  * of the atomic write helper. Anything running as this user can still read both files, so
  * revocation remains `signOut`.
  *
- * Fail-closed: if the JVM cannot provide AES-GCM, or the key file is unusable, construction
- * throws. This class never falls back to storing plaintext under any circumstance.
+ * Fail-closed against plaintext: if the JVM cannot provide AES-GCM construction throws, and
+ * this class never falls back to storing plaintext under any circumstance. A key file that
+ * will not decode no longer throws — the store is a cache of a session, not durable data,
+ * so the key is regenerated, the previous ciphertext reads as empty, and the user signs in
+ * again rather than the client refusing to build. A removal whose persist fails destroys
+ * the store before rethrowing, so sign-out can never leave a revoked refresh token on disk
+ * to be auto-loaded at the next start.
  */
 @Suppress("TooManyFunctions") // Settings mandates 23 members; the interface's contract, not this class's design.
 internal class EncryptedSessionSettings(
@@ -160,20 +169,68 @@ internal class EncryptedSessionSettings(
     }
 
     /**
-     * Loads the wrapping key, creating it on first use. The write goes through
-     * [atomicWriteText] so the key file is owner-only (0600) on POSIX from its first byte.
+     * Loads the wrapping key, creating it on first use. Creation is exclusive
+     * (`Files.createFile`): the app and the `BOSS llm-token` CLI both reach
+     * [createEncryptedSessionSettings] against the same directory, and a plain
+     * last-write-wins would let each process generate its own key and silently orphan the
+     * other's store at the next start. An existing key that cannot be used no longer
+     * throws: the store is a cache of a session, not durable data, so it is regenerated
+     * (the old ciphertext then reads as empty and the user signs in again) rather than
+     * disabling the whole Supabase client over a truncated or half-synced key file.
      */
+    @Suppress("ReturnCount") // Every unusable-key shape must resolve to a usable key; guards.
     private fun loadOrCreateKey(keyFile: File): SecretKeySpec {
+        readKeyBytes(keyFile)?.let { return SecretKeySpec(it, "AES") }
         if (keyFile.isFile) {
-            val bytes = decodeBase64Strict(keyFile.readText())
-            if (bytes.size != KEY_BYTES) {
-                error("The session encryption key is corrupt: ${keyFile.path}")
-            }
-            return SecretKeySpec(bytes, "AES")
+            logger.warn(
+                LogCategory.AUTH,
+                "The session encryption key is unusable; regenerating it. The stored session " +
+                    "will not decrypt, so sign-in is required.",
+                mapOf("keyFile" to keyFile.path),
+            )
         }
-        val bytes = ByteArray(KEY_BYTES).also(secureRandom::nextBytes)
-        keyFile.atomicWriteText(base64Encoder.encodeToString(bytes))
-        return SecretKeySpec(bytes, "AES")
+        val fresh = ByteArray(KEY_BYTES).also(secureRandom::nextBytes)
+        if (!createKeyFileExclusively(keyFile)) {
+            // Another process created the key between the read and the create; adopt theirs
+            // so both processes' stores decrypt with the same key. If it is the unusable
+            // file from above, fall through and overwrite it.
+            readKeyBytes(keyFile)?.let { return SecretKeySpec(it, "AES") }
+        }
+        keyFile.atomicWriteText(base64Encoder.encodeToString(fresh))
+        return SecretKeySpec(fresh, "AES")
+    }
+
+    /** The bytes of a usable existing key file, or null when the file is absent or unusable. */
+    private fun readKeyBytes(keyFile: File): ByteArray? {
+        if (!keyFile.isFile) return null
+        return try {
+            base64Decoder.decode(keyFile.readText().trim()).takeIf { it.size == KEY_BYTES }
+        } catch (_: IllegalArgumentException) {
+            null
+        }
+    }
+
+    /**
+     * Creates the key file so exactly one of two concurrently starting processes wins; the
+     * loser re-reads instead of overwriting the winner's key.
+     */
+    private fun createKeyFileExclusively(keyFile: File): Boolean {
+        keyFile.parentFile?.mkdirs()
+        return try {
+            val path = keyFile.toPath()
+            if (path.fileSystem.supportedFileAttributeViews().contains("posix")) {
+                // Owner-only from the file's first byte, matching atomicWriteText's contract.
+                Files.createFile(
+                    path,
+                    PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")),
+                )
+            } else {
+                Files.createFile(path)
+            }
+            true
+        } catch (_: FileAlreadyExistsException) {
+            false
+        }
     }
 
     /**
@@ -249,15 +306,6 @@ internal class EncryptedSessionSettings(
             )
         }
 
-    private fun decodeBase64Strict(text: String): ByteArray =
-        try {
-            base64Decoder.decode(text.trim())
-        } catch (e: IllegalArgumentException) {
-            // A key file that will not decode is unusable; fail closed rather than risk
-            // regenerating a key that would orphan the stored session.
-            throw IllegalStateException("The session encryption key is not valid base64", e)
-        }
-
     private fun decodeBase64OrNull(text: String): ByteArray? =
         try {
             base64Decoder.decode(text.trim())
@@ -272,10 +320,38 @@ internal class EncryptedSessionSettings(
 
     private fun <T> read(block: () -> T): T = synchronized(lock) { block() }
 
-    private fun mutate(block: () -> Unit) {
+    /**
+     * Applies a mutation and persists it. [removal] marks the sign-out shapes (`remove`,
+     * `clear`), which must never fail open: when the revoking rewrite cannot land, the
+     * ciphertext is destroyed before rethrowing, so a token that memory already reports
+     * gone cannot sit on disk and be auto-loaded at the next start (review #2 on #918).
+     */
+    private fun mutate(
+        removal: Boolean,
+        block: () -> Unit,
+    ) {
         synchronized(lock) {
             block()
-            persist()
+            try {
+                persist()
+            } catch (e: IOException) {
+                if (removal) destroyStoreAfterFailedRemoval(e)
+                throw e
+            } catch (e: IllegalStateException) {
+                if (removal) destroyStoreAfterFailedRemoval(e)
+                throw e
+            }
+        }
+    }
+
+    /** Best-effort revocation when the revoking rewrite could not be persisted. */
+    private fun destroyStoreAfterFailedRemoval(failure: Exception) {
+        if (!storeFile.delete()) {
+            logger.warn(
+                LogCategory.AUTH,
+                "A failed removal could not destroy the session store on disk",
+                mapOf("reason" to failure::class.simpleName),
+            )
         }
     }
 
@@ -286,11 +362,11 @@ internal class EncryptedSessionSettings(
         get() = read { entries.size }
 
     override fun clear() {
-        mutate { entries.clear() }
+        mutate(removal = true) { entries.clear() }
     }
 
     override fun remove(key: String) {
-        mutate { entries.remove(key) }
+        mutate(removal = true) { entries.remove(key) }
     }
 
     override fun hasKey(key: String): Boolean = read { entries.containsKey(key) }
@@ -299,7 +375,7 @@ internal class EncryptedSessionSettings(
         key: String,
         value: String,
     ) {
-        mutate { entries[key] = value }
+        mutate(removal = false) { entries[key] = value }
     }
 
     override fun getString(

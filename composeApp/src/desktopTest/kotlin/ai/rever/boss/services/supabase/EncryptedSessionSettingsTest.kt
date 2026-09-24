@@ -1,18 +1,23 @@
 package ai.rever.boss.services.supabase
 
 import com.russhwolf.settings.Settings
+import io.github.jan.supabase.auth.Auth
 import io.github.jan.supabase.auth.SettingsCodeVerifierCache
 import io.github.jan.supabase.auth.SettingsSessionManager
 import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.createSupabaseClient
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.attribute.PosixFileAttributeView
 import java.nio.file.attribute.PosixFilePermission
+import java.util.Base64
 import java.util.prefs.BackingStoreException
 import java.util.prefs.Preferences
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertSame
@@ -123,6 +128,32 @@ class EncryptedSessionSettingsTest {
     }
 
     @Test
+    fun `an undecodable key file regenerates instead of failing construction`() {
+        newStore().putString(SettingsSessionManager.SETTINGS_KEY, sessionJson)
+        // The shape a truncated write or half-synced home directory leaves behind.
+        File(temporary, KEY_FILE_NAME).writeText("not-valid-base64!!")
+
+        // Review #3 on #918: construction used to throw and park the client in
+        // AuthState.Error with no recovery. The store is a cache of a session: regenerate
+        // the key, read the orphaned ciphertext as empty, and have the user sign in again.
+        val after = reopenedStore()
+        assertEquals(0, after.size, "the orphaned session must read as empty, not garbage")
+        assertNull(after.getStringOrNull(SettingsSessionManager.SETTINGS_KEY))
+        after.putString(SettingsSessionManager.SETTINGS_KEY, sessionJson)
+        assertEquals(sessionJson, reopenedStore().getStringOrNull(SettingsSessionManager.SETTINGS_KEY))
+    }
+
+    @Test
+    fun `a wrong-length key file regenerates instead of failing construction`() {
+        newStore().putString(SettingsSessionManager.SETTINGS_KEY, sessionJson)
+        File(temporary, KEY_FILE_NAME).writeText(Base64.getEncoder().encodeToString(ByteArray(16)))
+
+        val after = reopenedStore()
+        assertEquals(0, after.size)
+        assertNull(after.getStringOrNull(SettingsSessionManager.SETTINGS_KEY))
+    }
+
+    @Test
     fun `a tampered store decrypts to nothing instead of garbage`() {
         newStore().putString(SettingsSessionManager.SETTINGS_KEY, sessionJson)
         val storeFile = File(temporary, STORE_FILE_NAME)
@@ -156,6 +187,26 @@ class EncryptedSessionSettingsTest {
             File(temporary, STORE_FILE_NAME).readText().contains("pkce-verifier-secret"),
             "a cleared store must not keep the secrets on disk",
         )
+    }
+
+    @Test
+    fun `a removal whose persist fails destroys the store instead of failing open`() {
+        val settings = newStore()
+        settings.putString(SettingsSessionManager.SETTINGS_KEY, sessionJson)
+        val storeFile = File(temporary, STORE_FILE_NAME)
+
+        // Make the revoking rewrite impossible: the atomic temp+move cannot replace a
+        // directory, so persist() raises IOException - the shape a full or read-only
+        // filesystem produces.
+        storeFile.delete()
+        storeFile.mkdirs()
+        assertTrue(storeFile.isDirectory)
+
+        assertFailsWith<IOException> { settings.remove(SettingsSessionManager.SETTINGS_KEY) }
+        // Review #2 on #918: sign-out must never fail open. The removed token may not stay
+        // on disk for the next start to auto-load, so the store is destroyed, not kept.
+        assertFalse(storeFile.exists(), "the failed removal must destroy the store file")
+        assertNull(settings.getStringOrNull(SettingsSessionManager.SETTINGS_KEY))
     }
 
     @Test
@@ -206,6 +257,37 @@ class EncryptedSessionSettingsTest {
         assertFalse(
             Regex("""SettingsCodeVerifierCache\(\s*\)""").containsMatchIn(source),
             "a no-arg SettingsCodeVerifierCache would silently fall back to java.util.prefs",
+        )
+    }
+
+    @Test
+    fun `the supabase-kt defaults match the migration's key and node assumptions`() {
+        // The migration fixtures and legacySettingsKeyNames are two independent copies of
+        // the same belief about supabase-kt 3.8.0: default settings keys are URL-qualified
+        // and the default Settings() resolves to Preferences.userRoot(). This pins both
+        // against the library itself, so a dependency bump that changes either breaks here
+        // instead of silently leaving plaintext tokens behind again (review #1 on #918).
+        val client =
+            createSupabaseClient(supabaseUrl = LEGACY_SUPABASE_URL, supabaseKey = "test-anon-key") {
+                install(Auth)
+            }
+        val sessionManager = client.auth.sessionManager as SettingsSessionManager
+        val codeVerifierCache = client.auth.codeVerifierCache as SettingsCodeVerifierCache
+
+        assertEquals(
+            LEGACY_SESSION_KEY,
+            sessionManager.reflectedString("key"),
+            "supabase-kt's default session key must stay the URL-qualified shape the migration probes",
+        )
+        assertEquals(
+            LEGACY_VERIFIER_KEY,
+            codeVerifierCache.reflectedString("key"),
+            "supabase-kt's default verifier key must stay the URL-qualified shape the migration probes",
+        )
+        assertEquals(
+            Preferences.userRoot().absolutePath(),
+            preferencesNodeBehind(sessionManager.wrappedSettings()).absolutePath(),
+            "the default Settings() must keep resolving to the userRoot node the migration reads",
         )
     }
 
@@ -349,6 +431,22 @@ class EncryptedSessionSettingsTest {
                 .getDeclaredField("settings")
                 .apply { isAccessible = true }
         return field.get(this) as Settings
+    }
+
+    /** The private settings key [SettingsSessionManager]/[SettingsCodeVerifierCache] use. */
+    private fun Any.reflectedString(name: String): String {
+        val field = javaClass.getDeclaredField(name).apply { isAccessible = true }
+        return field.get(this) as String
+    }
+
+    /** The `java.util.prefs` node behind the library's default `Settings()`. */
+    private fun preferencesNodeBehind(settings: Settings): Preferences {
+        val field =
+            settings.javaClass.declaredFields
+                .firstOrNull { Preferences::class.java.isAssignableFrom(it.type) }
+                ?.apply { isAccessible = true }
+                ?: fail("no java.util.prefs.Preferences field inside ${settings.javaClass.name}")
+        return field.get(settings) as Preferences
     }
 
     private fun sourceFile(name: String): File {
