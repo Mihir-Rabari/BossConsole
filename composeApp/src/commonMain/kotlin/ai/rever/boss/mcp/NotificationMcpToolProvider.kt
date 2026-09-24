@@ -32,6 +32,21 @@ import kotlinx.serialization.json.put
 object NotificationMcpToolProvider : McpToolProvider {
     override val providerId: String = "boss-notifications"
 
+    /** A page an agent can read in one go. */
+    internal const val DEFAULT_LIST_LIMIT = 50
+
+    /**
+     * The most one list call returns. Deliberately below [NotificationCenter.MAX_ENTRIES]: clamped
+     * to the store's own size this would be a no-op, since the store never holds more.
+     */
+    internal const val MAX_LIST_LIMIT = 100
+
+    /** A headline, not a body. */
+    internal const val MAX_TITLE_CHARS = 200
+
+    /** About a page of text: enough for "the migration finished, here is what changed". */
+    internal const val MAX_MESSAGE_CHARS = 4_000
+
     override fun tools(): List<McpToolDefinition> =
         listOf(
             createListTool(),
@@ -43,13 +58,19 @@ object NotificationMcpToolProvider : McpToolProvider {
     private fun createListTool(): McpToolDefinition =
         McpToolDefinition(
             name = "notifications_list",
-            description = "List inbox notifications (newest first), optionally only unread ones.",
+            description =
+                "List inbox notifications (newest first), optionally only unread ones. Returns at most 'limit' " +
+                    "entries (default $DEFAULT_LIST_LIMIT, at most $MAX_LIST_LIMIT) starting at 'offset'; 'total' " +
+                    "is how many match. 'offset' counts from the newest, so it is not a stable cursor: a post " +
+                    "between two calls shifts every later page by one.",
             inputSchema =
                 """
                 {
                     "type": "object",
                     "properties": {
-                        "unreadOnly": { "type": "boolean", "description": "Only return unread notifications" }
+                        "unreadOnly": { "type": "boolean", "description": "Only return unread notifications" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": $MAX_LIST_LIMIT, "description": "Entries to return" },
+                        "offset": { "type": "integer", "minimum": 0, "description": "Entries to skip from the newest" }
                     }
                 }
                 """.trimIndent(),
@@ -66,8 +87,8 @@ object NotificationMcpToolProvider : McpToolProvider {
                 {
                     "type": "object",
                     "properties": {
-                        "title": { "type": "string", "description": "Short headline" },
-                        "message": { "type": "string", "description": "Optional longer body" },
+                        "title": { "type": "string", "maxLength": $MAX_TITLE_CHARS, "description": "Short headline" },
+                        "message": { "type": "string", "maxLength": $MAX_MESSAGE_CHARS, "description": "Optional longer body" },
                         "level": { "type": "string", "description": "INFO, SUCCESS, WARNING or ERROR" },
                         "source": { "type": "string", "description": "Optional display label; stamped with agent provenance, max 80 chars" }
                     },
@@ -111,13 +132,28 @@ object NotificationMcpToolProvider : McpToolProvider {
             readOnly = false,
         )
 
+    /**
+     * Paged, because this is read-only and so allowed without asking. What bounds one response:
+     * at most [MAX_LIST_LIMIT] entries, each with a title and message capped by [handlePost] and a
+     * `source` that [NotificationCenter] reduces to an 80-character label for every post this tool
+     * makes (#1619). Entries stored before those caps age out under the store's own size.
+     *
+     * An `offset` too large for an Int reads as absent, so it returns the newest page rather than
+     * an empty one; a paging loop should stop on `returned == 0` or on `offset >= total`.
+     */
     private fun handleList(args: McpToolArgs): McpToolResult {
         val unreadOnly = args.boolean("unreadOnly") ?: false
-        val entries = NotificationCenter.notifications.value.filter { !unreadOnly || !it.read }
+        val limit = (args.int("limit") ?: DEFAULT_LIST_LIMIT).coerceIn(1, MAX_LIST_LIMIT)
+        val offset = (args.int("offset") ?: 0).coerceAtLeast(0)
+        val matching = NotificationCenter.notifications.value.filter { !unreadOnly || !it.read }
+        val entries = matching.drop(offset).take(limit)
         val response =
             buildJsonObject {
                 put("success", true)
                 put("unreadCount", NotificationCenter.unreadCount())
+                put("total", matching.size)
+                put("offset", offset)
+                put("returned", entries.size)
                 put(
                     "notifications",
                     buildJsonArray { entries.forEach { add(entryJson(it)) } },
@@ -132,6 +168,10 @@ object NotificationMcpToolProvider : McpToolProvider {
         if (title.isNullOrBlank()) {
             return McpToolResult("title is required", isError = true)
         }
+        // This tool is the inbox's only writer, so its fields are bounded here, refused with the
+        // limit named rather than cut. `source` is not checked here because NotificationCenter
+        // already reduces it to a bounded label for every post this tool makes (#1619).
+        tooLong(args)?.let { return McpToolResult(it, isError = true) }
         // Everything arriving through this MCP boundary is agent-supplied by construction, so the
         // post is stamped AGENT and the agent's `source` argument is demoted to a display label at
         // the NotificationCenter boundary - it cannot present as a host notice (BossConsole#1587).
@@ -182,6 +222,15 @@ object NotificationMcpToolProvider : McpToolProvider {
             }.toString(),
         )
     }
+
+    private fun tooLong(args: McpToolArgs): String? =
+        listOf(
+            "title" to MAX_TITLE_CHARS,
+            "message" to MAX_MESSAGE_CHARS,
+        ).firstNotNullOfOrNull { (field, max) ->
+            val length = args.string(field)?.length ?: 0
+            if (length > max) "$field is $length characters; the limit is $max" else null
+        }
 
     private fun entryJson(entry: BossNotification) =
         buildJsonObject {
