@@ -350,4 +350,27 @@ class CLISecurityValidatorTest {
         assertFalse(CLISecurityValidator.isRestrictedSystemPath("/root"))
         assertFalse(CLISecurityValidator.isRestrictedSystemPath("/root/myproject"))
     }
+
+    // #1651: normalizePath gives "" for input it will not normalize, and "" used to read as "not
+    // restricted" - so padding a restricted path past the length cap walked it through this check.
+    @Test
+    fun `an over-long path is restricted rather than waved through`() {
+        val padded = "/etc/" + "./".repeat(16_500)
+        check(padded.length > 32_768) { "the fixture must exceed the normalize cap" }
+
+        assertTrue(CLISecurityValidator.isRestrictedSystemPath(padded))
+        // Fail closed regardless of where it points: its target cannot be known.
+        assertTrue(CLISecurityValidator.isRestrictedSystemPath("/home/user/" + "a/".repeat(16_500)))
+        assertTrue(CLISecurityValidator.isRestrictedSystemPath("C:\\Windows\\" + ".\\".repeat(16_500)))
+    }
+
+    @Test
+    fun `a path at the cap is still judged on where it points, and a blank path names nothing`() {
+        val atCap = "/home/user/" + "a".repeat(32_768 - "/home/user/".length)
+        check(atCap.length == 32_768)
+
+        assertFalse(CLISecurityValidator.isRestrictedSystemPath(atCap))
+        assertFalse(CLISecurityValidator.isRestrictedSystemPath(""))
+        assertFalse(CLISecurityValidator.isRestrictedSystemPath("   "))
+    }
 }

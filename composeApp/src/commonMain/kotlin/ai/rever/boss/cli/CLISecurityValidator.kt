@@ -201,7 +201,14 @@ object CLISecurityValidator {
      * in memory without filesystem dependencies.
      *
      * Note: [isValidPath] already rejects any path containing `..`, so the `..`-resolution
-     * here only earns its keep when [isRestrictedSystemPath] is evaluated before [isValidPath].
+     * here only changes an answer for a caller that consults [isRestrictedSystemPath] before
+     * [isValidPath] - as the MCP open_workspace path check does. A caller that runs
+     * [isValidPath] alone (the MCP open_terminal handler) refuses `/home/x/../../etc` through
+     * the generic `..` rule instead, with the generic message (#1651).
+     *
+     * Returns `""` for blank input and for input longer than [MAX_OPEN_TARGET_PATH_LENGTH]:
+     * it is not a path this function will normalize. [isRestrictedSystemPath] does not read
+     * that `""` as "not restricted" for the over-long case.
      */
     fun normalizePath(path: String): String {
         val trimmed = path.trim()
@@ -229,8 +236,13 @@ object CLISecurityValidator {
      * root path that should never be accessed or opened as a workspace.
      */
     fun isRestrictedSystemPath(path: String): Boolean {
-        val normalized = normalizePath(path)
-        if (normalized.isEmpty()) return false
+        val trimmed = path.trim()
+        // The two inputs normalizePath refuses. Blank names no directory at all (callers refuse
+        // it on their own: not absolute), so it is not restricted. Over-long fails closed: where
+        // it points is unknown, and "/etc/" + "./".repeat(16_500) must not read as "not
+        // restricted" (#1651).
+        if (trimmed.isEmpty() || trimmed.length > MAX_OPEN_TARGET_PATH_LENGTH) return trimmed.isNotEmpty()
+        val normalized = normalizePath(trimmed)
 
         val isRoot = normalized == "/" || (normalized.length == 3 && normalized.endsWith(":/"))
         val lower = normalized.lowercase()
