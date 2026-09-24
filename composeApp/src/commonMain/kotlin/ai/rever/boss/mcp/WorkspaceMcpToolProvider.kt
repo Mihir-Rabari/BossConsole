@@ -521,17 +521,11 @@ object WorkspaceMcpToolProvider : McpToolProvider {
                         isError = true,
                     )
                 }
-                // And the ids whose FILE would be one of the store's reserved records (#926):
-                // the load scan skips those names, so a save that lands on one never appears
-                // in the Space list while it destroys the record it replaced.
-                reservedWorkspaceStoreFileName(newId)?.let { reserved ->
-                    return McpToolResult(
-                        "'$newId' would save over '$reserved', a reserved workspace-store " +
-                            "record (Space themes or a last-session record), destroying it. " +
-                            "Pass a different workspaceId.",
-                        isError = true,
-                    )
-                }
+                // And the reserved store files the id resolves onto BY NAME - the document
+                // records (Space_Themes, Last_Session_Set) and the single-Space session
+                // record's spellings - through the one gate shared with the import path
+                // (#926, #964, #1643). Fail-closed before anything is created or applied.
+                refusalForReservedStoreFile(newId)?.let { return McpToolResult(it, isError = true) }
                 val wsName = name?.takeIf { it.isNotBlank() } ?: "Workspace $newId"
                 val rootPath = canonicalProjectPath ?: DefaultWorkingDirectory.nominalPath()
                 workspace = createDefaultWorkspace(newId, wsName, rootPath, openTerminal = openTerminal)
@@ -810,6 +804,10 @@ object WorkspaceMcpToolProvider : McpToolProvider {
                 LayoutWorkspace.generateId()
             }
 
+        // The minted ids cannot spell a reserved store file today, but the guard is fail-closed
+        // on every persist route this tool has, not only the caller-chosen one (#926).
+        refusalForReservedStoreFile(id)?.let { return McpToolResult(it, isError = true) }
+
         val wsName =
             name?.takeIf { it.isNotBlank() }
                 ?: if (isDisposable) "Disposable Workspace" else "New Workspace"
@@ -1037,6 +1035,34 @@ object WorkspaceMcpToolProvider : McpToolProvider {
             }
 
         return McpToolResult(response.toString())
+    }
+
+    /**
+     * The user-facing refusal when a workspace id would persist onto one of the workspace
+     * store's reserved record files (see
+     * [WorkspaceFileManagerCommon.reservedRecordFileNames]), or null when the id is safe.
+     *
+     * The workspace MCP tools are the one door where a caller-chosen *id* becomes a file: every
+     * save route here derives the file from the id ([WorkspaceFileManagerCommon.fileNameForId]),
+     * so an id that resolves to `Space_Themes.json`, `Last_Session_Set.json` or one of the
+     * single-Space session record's spellings does not save a Space, it overwrites the host's
+     * own store: every Space's theme assignment goes with the first, the next launch's session
+     * restore with the second, and the crash-recovery record with the third (#926).
+     *
+     * The one gate is [reservedWorkspaceStoreFileName], shared with the import path's
+     * `withImportableId` (#964, #1643): it strips the caller's own `.json` suffix because the
+     * load path treats a suffixed id as that file name, derives the name with the SAME
+     * sanitiser the save uses, and compares case-insensitively because APFS and NTFS fold
+     * case. `WorkspaceManager` skips the document records when it scans the directory and
+     * still loads the real session record; this mirrors the write side of that boundary,
+     * fail-closed and BEFORE anything is created or applied, so nothing is left half-made.
+     * Path-shaped spellings never get this far - [isSafeWorkspaceId] refuses them first.
+     */
+    internal fun refusalForReservedStoreFile(id: String): String? {
+        val reserved = reservedWorkspaceStoreFileName(id) ?: return null
+        return "'$id' cannot be a workspace id: it resolves to the reserved store file " +
+            "'$reserved', which BOSS keeps for its own records (Space themes, the session " +
+            "records). Pass a different workspaceId."
     }
 
     private fun createDefaultWorkspace(

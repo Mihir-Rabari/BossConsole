@@ -151,6 +151,56 @@ object WorkspaceFileManagerCommon {
     private fun sanitize(value: String): String = value.replace(Regex("[^a-zA-Z0-9.-]"), "_")
 
     /**
+     * The record files that live in the workspaces directory without being Spaces: the
+     * session-set store and the Space-theme store - exactly the files [WorkspaceManager]'s
+     * directory scan skips by name (see `LAST_SESSION_SET_FILE` / `SPACE_THEMES_FILE`).
+     *
+     * **One list for both sides of the boundary.** The scan skips these because they are not
+     * Spaces; every write that reaches the directory on a caller-chosen name must refuse the
+     * same files, or a workspace tool can be aimed at the host's own persisted records: an id
+     * whose [fileNameForId] lands here does not save a Space, it overwrites the store. A
+     * `Space_Themes.json` written through a workspace tool silently wipes every Space's theme
+     * assignment, and a `Last_Session_Set.json` that is not a session-set record makes the
+     * next launch's session restore wrong or absent (#926). Keeping the scan's skips on this
+     * list too means neither side can drift from the other; the write side extends it rather
+     * than replaces it - see [reservedRecordFileNames].
+     */
+    val reservedDocumentFileNames: Set<String> = setOf(LAST_SESSION_SET_FILE, SPACE_THEMES_FILE)
+
+    /**
+     * The files a caller-chosen workspace id must never persist onto: the document records
+     * above, plus the two names of the single-Space session record (#964, #1643) - the legacy
+     * `Last_Session.json` a pre-[fileNameForId] install wrote every session, and
+     * `last-session.json`, the file [fileNameForId] of [LAST_SESSION_ID] writes for the live
+     * record. Unlike
+     * the document records these DO parse as Spaces: the load scan reads the real session
+     * record, so they are not scan skips - but the write side still refuses the name, or one
+     * caller-chosen id destroys the crash-recovery record.
+     *
+     * This is the one list both write gates consult: the MCP path's refusal helper
+     * (`WorkspaceMcpToolProvider.refusalForReservedStoreFile`, via
+     * [reservedWorkspaceStoreFileName]) and the import gate (`withImportableId`), so the two
+     * cannot drift apart. A new DOCUMENT record belongs in [reservedDocumentFileNames], which
+     * carries it here automatically; a new session-record spelling belongs here.
+     */
+    val reservedRecordFileNames: Set<String> =
+        reservedDocumentFileNames + setOf(LEGACY_LAST_SESSION_FILE, fileNameForId(LAST_SESSION_ID))
+
+    /** [reservedDocumentFileNames] folded once for the case-insensitive comparison below. */
+    private val reservedDocumentFileNamesFolded: Set<String> = reservedDocumentFileNames.map { it.lowercase() }.toSet()
+
+    /**
+     * Whether [fileName] is one of the reserved record files (see [reservedDocumentFileNames]) -
+     * the gate a caller-chosen name passes before anything is written.
+     *
+     * Compared case-folded because the filesystems this lands on fold too: APFS and NTFS are
+     * case-insensitive by default, so an exact-match gate is bypassed by spelling the same
+     * record in lower case (`space_themes.json` IS `Space_Themes.json` there), and the
+     * lowercase write replaces the store the gate exists to protect (#926).
+     */
+    fun isReservedDocumentFileName(fileName: String): Boolean = fileName.lowercase() in reservedDocumentFileNamesFolded
+
+    /**
      * Extract workspace name from filename
      */
     fun extractWorkspaceName(fileName: String): String = fileName.removeSuffix(".json").replace("_", " ")
