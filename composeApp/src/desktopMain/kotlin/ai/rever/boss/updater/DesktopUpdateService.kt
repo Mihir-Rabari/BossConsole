@@ -278,6 +278,15 @@ actual class UpdateService internal constructor(
         sha256: String?,
         onProgress: (progress: Float) -> Unit,
     ): String? {
+        // A hashless catalog row is refused BEFORE anything on disk is touched: the checksum
+        // is required, so there is nothing to verify the download against and no reason to
+        // fetch it (the refusal used to land only after the whole download completed). The
+        // order matters as much as the refusal itself: this call must stay ABOVE the
+        // clean-slate deletes below, or a hashless row would destroy a good, already-verified
+        // staged update - and its checksum marker - just to reject a different body it never
+        // fetched. See `refuseHashlessCatalogRow` for the typed, user-facing reason.
+        refuseHashlessCatalogRow(sha256, assetName)
+
         // Held outside the try so a cancellation can clean up the partial file. A
         // cancelled download otherwise leaves a half-written installer in the staging
         // directory under the exact name the next attempt checks for, and the next
@@ -310,27 +319,6 @@ actual class UpdateService internal constructor(
             val downloadFile = File(tempDir, assetName)
             val partFile = File(tempDir, "$assetName.part")
 
-            // A hashless catalog row is refused BEFORE anything on disk is touched:
-            // the checksum is required, so there is nothing to verify the download
-            // against and no reason to fetch it (the refusal used to land only after
-            // the whole download completed). The order matters as much as the refusal
-            // itself: this check must stay ABOVE the clean-slate deletes below, or a
-            // hashless row would destroy a good, already-verified staged update - and
-            // its checksum marker - just to reject a different body it never fetched.
-            // The refusal throws with its own user-facing reason: a hashless row
-            // otherwise surfaces downstream as a generic "Failed to download update".
-            if (sha256 == null) {
-                logger.error(
-                    LogCategory.SYSTEM,
-                    "Refusing the update download - catalog row has no checksum",
-                    mapOf("asset" to assetName),
-                )
-                throw UpdateDownloadRefusedException(
-                    "The update was not downloaded: the release catalog lists no checksum " +
-                        "for $assetName, so its integrity cannot be verified.",
-                )
-            }
-
             // Clean slate: remnants of a crashed earlier attempt (a published
             // artifact, its checksum marker, or a partial) must not be mistakable
             // for this attempt's result.
@@ -354,12 +342,6 @@ actual class UpdateService internal constructor(
             runCatching { partial?.delete() }
             logger.info(LogCategory.SYSTEM, "Update download cancelled", mapOf("asset" to assetName))
             throw e
-        } catch (e: UpdateDownloadRefusedException) {
-            // A refusal is an answer with a reason the user must see - rethrow
-            // it instead of flattening it into a generic failed download. It is
-            // thrown before anything was fetched or staged, so there is no
-            // partial to clean up here.
-            throw e
         } catch (e: Exception) {
             val errorMessage =
                 when (e) {
@@ -375,6 +357,34 @@ actual class UpdateService internal constructor(
             logger.error(LogCategory.NETWORK, "Error downloading update", mapOf("error" to errorMessage))
             null
         }
+    }
+
+    /**
+     * [downloadFrom]'s catalog-checksum gate, hoisted above everything the download touches
+     * on disk: a row that cannot describe its own asset's bytes - a GitHub-only catalog row,
+     * whose releases carry no hashes - offers nothing that can be verified before an
+     * elevated install, so there is nothing to fetch and nothing to stage. Refused here as
+     * its own typed answer with a user-facing reason rather than a null, so it cannot
+     * flatten into the generic "Failed to download update" downstream. The call site must
+     * stay at the top of [downloadFrom], above its clean-slate deletes: below them, a
+     * hashless row would destroy a good, already-verified staged update - and its checksum
+     * marker - just to reject a different body it never fetches. The hashless-refusal
+     * regression tests pin both the ordering and the zero-fetch contract.
+     */
+    private fun refuseHashlessCatalogRow(
+        sha256: String?,
+        assetName: String,
+    ) {
+        if (sha256 != null) return
+        logger.error(
+            LogCategory.SYSTEM,
+            "Refusing the update download - catalog row has no checksum",
+            mapOf("asset" to assetName),
+        )
+        throw UpdateDownloadRefusedException(
+            "The update was not downloaded: the release catalog lists no checksum " +
+                "for $assetName, so its integrity cannot be verified.",
+        )
     }
 
     /**

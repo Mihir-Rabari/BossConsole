@@ -1,6 +1,7 @@
 package ai.rever.boss.updater
 
 import ai.rever.boss.updater.source.GitHubUpdateSource
+import ai.rever.boss.utils.Version
 import ai.rever.boss.utils.sha256Of
 import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.runBlocking
