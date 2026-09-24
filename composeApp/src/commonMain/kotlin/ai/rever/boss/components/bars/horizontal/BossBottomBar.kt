@@ -542,7 +542,7 @@ private fun McpActivityStatusItem() {
     var showFlightPlan by remember { mutableStateOf(false) }
     val allTools by McpToolRegistryImpl.allTools.collectAsState()
     val shouldRender =
-        mcpActivityStatusShouldRender(recentOps.isNotEmpty(), allTools.isNotEmpty(), showActivityLog, showFlightPlan)
+        mcpActivityStatusShowsFor(allTools, recentOps.isNotEmpty(), showActivityLog, showFlightPlan)
     if (!shouldRender) return
     // The most recent CALL: a YOLO on/off marker is in the ledger for audit but is not a call.
     val lastOp = recentOps.firstOrNull { !it.approvalDisposition.isGovernanceEvent }
