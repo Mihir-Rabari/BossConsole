@@ -13,9 +13,16 @@ import ai.rever.boss.ipc.services.KernelServiceImpl
 import ai.rever.boss.ipc.services.StateServiceImpl
 import com.google.protobuf.ByteString
 import io.grpc.BindableService
+import io.grpc.CallOptions
+import io.grpc.Channel
+import io.grpc.ClientCall
+import io.grpc.ClientInterceptor
+import io.grpc.ClientInterceptors
 import io.grpc.ConnectivityState
+import io.grpc.ForwardingClientCall
 import io.grpc.ForwardingServerCall
 import io.grpc.Metadata
+import io.grpc.MethodDescriptor
 import io.grpc.ServerCall
 import io.grpc.ServerCallHandler
 import io.grpc.ServerInterceptor
@@ -99,6 +106,66 @@ class IpcTransportLimitsTest {
                         .setPayload(ByteString.copyFromUtf8("fine"))
                         .build()
                 assertRecovers(stub, wellFormed)
+            }
+        }
+
+    @Test
+    fun `oversized request metadata is refused at the server and later calls are unaffected`() =
+        runBlocking {
+            // The cap is pinned BELOW gRPC's 8KiB default header budget for the same reason as the
+            // message-size test above: with the explicit pin removed this request is admitted and
+            // this test fails. The injected header's value alone is one byte over the cap, so the
+            // header list crosses it regardless of how the transport counts the process token and
+            // its own framing headers, while the total stays far under the library default.
+            val serverLimits = IpcTransportLimits(maxInboundMetadataBytes = 1_024)
+            val oversizedRequestHeaders =
+                object : ClientInterceptor {
+                    override fun <ReqT : Any?, RespT : Any?> interceptCall(
+                        method: MethodDescriptor<ReqT, RespT>,
+                        callOptions: CallOptions,
+                        next: Channel,
+                    ): ClientCall<ReqT, RespT> =
+                        object : ForwardingClientCall.SimpleForwardingClientCall<ReqT, RespT>(
+                            next.newCall(method, callOptions),
+                        ) {
+                            override fun start(
+                                responseListener: ClientCall.Listener<RespT>,
+                                headers: Metadata,
+                            ) {
+                                headers.put(
+                                    Metadata.Key.of("oversized-request", Metadata.ASCII_STRING_MARSHALLER),
+                                    "x".repeat(serverLimits.maxInboundMetadataBytes + 1),
+                                )
+                                super.start(responseListener, headers)
+                            }
+                        }
+                }
+            IpcTestServer(KernelServiceImpl(), limits = serverLimits).use { host ->
+                val writer =
+                    KernelServiceGrpcKt.KernelServiceCoroutineStub(
+                        ClientInterceptors.intercept(host.channelFor("metadata-writer"), oversizedRequestHeaders),
+                    )
+                val request = ProcessStatusRequest.newBuilder().setProcessId("metadata-writer").build()
+
+                val refusal = assertFailsWith<StatusException> { writer.getProcessStatus(request) }
+
+                // Same shape as the oversize request test: the transport refuses the headers before
+                // any service handler runs, and the refusal may surface as RESOURCE_EXHAUSTED
+                // trailers or as the teardown-shaped UNAVAILABLE / CANCELLED / INTERNAL codes when
+                // it interrupts the write or escalates into a connection GOAWAY. Only identity-
+                // shaped codes would masquerade as an auth failure instead of the header budget
+                // refusing the request.
+                val refusalCode = refusal.status.code
+                assertTrue(
+                    refusalCode != Status.Code.UNAUTHENTICATED && refusalCode != Status.Code.PERMISSION_DENIED,
+                    "oversized request headers must fail at the transport, saw $refusalCode",
+                )
+
+                // The well-formed half of the contract: the refusal targeted the headers, not the
+                // peer. A peer sending ordinary headers is admitted by the same capped server.
+                val normalWriter = KernelServiceGrpcKt.KernelServiceCoroutineStub(host.channelFor("normal-writer"))
+                val normalRequest = ProcessStatusRequest.newBuilder().setProcessId("normal-writer").build()
+                assertEquals(ProcessState.PROCESS_STATE_STOPPED, normalWriter.getProcessStatus(normalRequest).state)
             }
         }
 
