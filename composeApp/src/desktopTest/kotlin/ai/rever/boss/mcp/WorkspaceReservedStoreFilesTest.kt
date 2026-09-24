@@ -175,9 +175,9 @@ class WorkspaceReservedStoreFilesTest {
         )
         assertEquals(
             WorkspaceFileManagerCommon.reservedDocumentFileNames +
-                setOf("Last_Session.json", "last_session.json"),
+                setOf("Last_Session.json", "last-session.json"),
             WorkspaceFileManagerCommon.reservedRecordFileNames,
-            "the write gate extends the scan's skips with the session-record spellings (#964)",
+            "the write gate extends the scan's skips with the session-record names (#964)",
         )
     }
 }

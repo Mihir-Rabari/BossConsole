@@ -169,9 +169,10 @@ object WorkspaceFileManagerCommon {
 
     /**
      * The files a caller-chosen workspace id must never persist onto: the document records
-     * above, plus the two spellings of the single-Space session record (#964, #1643) - the
-     * legacy `Last_Session.json` a pre-[fileNameForId] install wrote every session, and the
-     * id-derived `last_session.json`, the same file on a case-insensitive filesystem. Unlike
+     * above, plus the two names of the single-Space session record (#964, #1643) - the legacy
+     * `Last_Session.json` a pre-[fileNameForId] install wrote every session, and
+     * `last-session.json`, the file [fileNameForId] of [LAST_SESSION_ID] writes for the live
+     * record. Unlike
      * the document records these DO parse as Spaces: the load scan reads the real session
      * record, so they are not scan skips - but the write side still refuses the name, or one
      * caller-chosen id destroys the crash-recovery record.
