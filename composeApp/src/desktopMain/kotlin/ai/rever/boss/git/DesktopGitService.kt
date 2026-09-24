@@ -2325,13 +2325,16 @@ actual object GitService {
         // allow-list below.
         //
         // Same control-character and length limits as [isSafeRefName], so an embedded
-        // newline cannot forge a log line when the URL is logged. Spaces stay allowed:
-        // local paths legitimately contain them.
+        // newline cannot forge a log line when the URL is logged. One deliberate
+        // difference: the plain space stays allowed, because local paths legitimately
+        // contain it - every other whitespace is refused with the C0 controls and DEL,
+        // including NEL (U+0085) and U+2028/U+2029, which a `code < 0x20` check alone
+        // misses (#1602).
         val refused =
             repositoryUrl.isBlank() ||
                 repositoryUrl.startsWith("-") ||
                 repositoryUrl.length > MAX_CLONE_URL_LENGTH ||
-                repositoryUrl.any { it.code < 0x20 || it == '\u007F' }
+                repositoryUrl.any { it.code < 0x20 || it == '\u007F' || (it.isWhitespace() && it != ' ') }
         if (refused) return false
         // The allow-list: the four URL forms the clone dialog accepts, or an explicit
         // local path, which the clone lifecycle tests and retry flow clone from.
