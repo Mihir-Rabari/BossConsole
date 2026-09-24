@@ -65,8 +65,10 @@ class GitCloneUrlSafetyTest {
         assertFalse(GitService.isSafeCloneUrl("https://example.invalid/repo.git\r"))
         assertFalse(GitService.isSafeCloneUrl("/srv/git/repo\u0000.git"))
         assertFalse(GitService.isSafeCloneUrl("https://example.invalid/repo\u007F.git"))
-        // The separators a `code < 0x20` check alone misses, covered by isWhitespace()
-        // like [GitService.isSafeRefName]: NEL, LINE SEPARATOR, PARAGRAPH SEPARATOR (#1602).
+        // The separators a `code < 0x20` check alone misses (#1602): NEL, refused
+        // explicitly - isWhitespace() stopped reporting it when Unicode reclassified
+        // it from LINE SEPARATOR to CONTROL - and LINE/PARAGRAPH SEPARATOR, which
+        // isWhitespace() covers like [GitService.isSafeRefName].
         assertFalse(GitService.isSafeCloneUrl("https://example.invalid/repo\u0085.git"))
         assertFalse(GitService.isSafeCloneUrl("https://example.invalid/repo\u2028.git"))
         assertFalse(GitService.isSafeCloneUrl("https://example.invalid/repo\u2029.git"))
