@@ -5,6 +5,15 @@ import ai.rever.boss.components.workspaces.SPACE_THEMES_FILE
 import ai.rever.boss.components.workspaces.WorkspaceFileManager
 import ai.rever.boss.components.workspaces.WorkspaceFileManagerCommon
 import ai.rever.boss.plugin.api.McpToolResult
+import ai.rever.boss.components.window_panel.SplitViewState
+import ai.rever.boss.components.window_panel.SplitViewStateRegistry
+import ai.rever.boss.plugin.api.TabComponentWithUI
+import ai.rever.boss.plugin.api.TabInfo
+import ai.rever.boss.plugin.api.TabRegistry
+import ai.rever.boss.plugin.api.TabTypeInfo
+import ai.rever.boss.plugin.tab.terminal.TerminalTabType
+import androidx.compose.runtime.Composable
+import com.arkivanov.decompose.ComponentContext
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.nio.file.Files
@@ -33,6 +42,7 @@ import kotlin.test.assertTrue
 class WorkspaceReservedStoreFilesTest {
     private val themeSentinel = """{"themes":{"space-1":"ocean"}}"""
     private val sessionSentinel = """{"windows":{"w1":["a","b"]}}"""
+    private val createdSplitViewStates = mutableListOf<SplitViewState>()
     private lateinit var workspaceDir: File
     private lateinit var fileManager: WorkspaceFileManager
 
@@ -43,7 +53,18 @@ class WorkspaceReservedStoreFilesTest {
         WorkspaceMcpToolProvider.fileManagerProvider = { fileManager }
         // A cold start mints a window; the refusals below fire before anything is persisted,
         // but the createIfAbsent route needs the hook to get past target-window resolution.
-        WorkspaceMcpToolProvider.windowCreator = { "test-window-reserved-1" }
+        // A real window registers its SplitViewState as it composes; open_workspace awaits
+        // that before applying, so the harness window must register too - same shape as
+        // WorkspaceMcpToolProviderTest and WorkspaceReservedStoreNameTest.
+        WorkspaceMcpToolProvider.windowCreator = {
+            "test-window-reserved-1".also { id ->
+                if (!SplitViewStateRegistry.isRegistered(id)) {
+                    val state = SplitViewState(stubTabRegistry, id)
+                    createdSplitViewStates.add(state)
+                    SplitViewStateRegistry.register(id, state)
+                }
+            }
+        }
         WorkspaceMcpToolProvider.splitViewStateResolver = { null }
         WorkspaceMcpToolProvider.terminalTabOpener = null
         // 50 ms sat on the CI flake floor: the positive control below waits for the window to
@@ -59,6 +80,11 @@ class WorkspaceReservedStoreFilesTest {
         WorkspaceMcpToolProvider.splitViewStateResolver = null
         WorkspaceMcpToolProvider.terminalTabOpener = null
         WorkspaceMcpToolProvider.splitViewWaitTimeoutMs = 5000L
+        SplitViewStateRegistry.getAllStates().keys.forEach {
+            SplitViewStateRegistry.unregister(it)
+        }
+        createdSplitViewStates.forEach { it.dispose() }
+        createdSplitViewStates.clear()
         workspaceDir.deleteRecursively()
     }
 
@@ -183,4 +209,19 @@ class WorkspaceReservedStoreFilesTest {
             "the write gate extends the scan's skips with the session-record names (#964)",
         )
     }
+
+    private class StubTabComponent(
+        ctx: ComponentContext,
+        override val config: TabInfo,
+        override val tabTypeInfo: TabTypeInfo,
+    ) : TabComponentWithUI,
+        ComponentContext by ctx {
+        @Composable
+        override fun Content() = Unit
+    }
+
+    private val stubTabRegistry =
+        TabRegistry().apply {
+            registerTabType(TerminalTabType) { config, ctx -> StubTabComponent(ctx, config, TerminalTabType) }
+        }
 }
