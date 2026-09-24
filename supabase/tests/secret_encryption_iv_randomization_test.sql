@@ -1,11 +1,11 @@
 -- BossConsole#618 (defect 1): encrypt_text/decrypt_text must no longer produce
 -- deterministic ciphertext. All migrations are already applied by the time
 -- this file runs, so the 20260914000000 backfill had nothing to convert on a
--- fresh database; the last block below re-runs 20260920120000_secret_
+-- fresh database; the last block below re-runs 20260923171000_secret_
 -- authenticated_encryption_pgp.sql's exact UPDATE statement against a row
 -- inserted in the pre-v2 format to prove that statement's logic directly,
 -- rather than only trusting that it ran once at migration time. The live
--- envelope is v3 (authenticated PGP) since 20260920120000; the deeper
+-- envelope is v3 (authenticated PGP) since 20260923171000; the deeper
 -- adversarial invariants live in secret_authenticated_encryption_test.sql.
 BEGIN;
 SELECT no_plan();

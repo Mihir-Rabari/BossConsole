@@ -1,7 +1,7 @@
 -- ============================================================================
 -- BOSS Database Schema: authenticated encryption for the secrets vault
 -- ============================================================================
--- File: 20260923121000_secret_authenticated_encryption_pgp.sql
+-- File: 20260923171000_secret_authenticated_encryption_pgp.sql
 -- Fixes: BossConsole#618 (defect 3 of 3, the last one; see that issue and the
 -- "Deliberately NOT touched here" list in 20260914000000).
 --

@@ -40,7 +40,7 @@ select public.create_secret('rotation.example', 'fixture', 'core-fixture',
 update public.secret_metadata sm set twofa_secret = 'JBSWY3DPEHPK3PXP'
   from public.secrets sec where sec.id = sm.secret_id and sec.website = 'rotation.example';
 -- Existing broker rows remain legacy while new writes use v3 (authenticated
--- PGP since 20260920120000). Exercise both paths in the same rotation,
+-- PGP since 20260923171000). Exercise both paths in the same rotation,
 -- independently constructing the old format.
 insert into public.qbo_token_state values (1, encode(extensions.encrypt(
     convert_to('client', 'utf8'), public.get_encryption_key()::bytea, 'aes'), 'base64'),

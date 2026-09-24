@@ -229,10 +229,10 @@ begin
   -- any) is either the legacy zero-IV ciphertext every column held before
   -- 20260914000000_randomize_secret_encryption_iv.sql, or - for the three
   -- columns that migration touched - the 'v2:' || base64(iv || ciphertext)
-  -- envelope encrypt_text wrote before 20260920120000, or the 'v3:' ||
+  -- envelope encrypt_text wrote before 20260923171000, or the 'v3:' ||
   -- base64(PGP) envelope (authenticated: MDC-checked, fresh session key and
   -- S2K salt per value) it has written since
-  -- 20260920120000_secret_authenticated_encryption_pgp.sql. This function
+  -- 20260923171000_secret_authenticated_encryption_pgp.sql. This function
   -- re-encrypts every shape
   -- under the new key, preserving its own envelope rather than upgrading one
   -- to the other: that upgrade is the encryption migration's job, not
