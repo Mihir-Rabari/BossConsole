@@ -71,6 +71,23 @@ class BossContextCliTest {
     }
 
     @Test
+    fun `context flattens control, format, and line-separator characters in workspace text`() {
+        // NEL, U+2028/U+2029, CR/LF/TAB, ESC, and a Cf character (ZWSP here) must
+        // never reach the terminal-agent handoff: each becomes a plain space.
+        val hostileProject =
+            "C:/work/Boss\\u0085Con\\u2028sole\\u2029Lab\\u000dEsc\\u001bRlo\\u000aZw\\u200bsp"
+        serve(STATUS.replace("C:/work/BossConsole", hostileProject), TOOLS)
+
+        assertEquals(0, exitOf("context"))
+
+        val report = out.toString()
+        assertTrue(report.contains("Workspace: C:/work/Boss Con sole Lab Esc Rlo Zw sp"), report)
+        listOf('\u0085', '\u2028', '\u2029', '\u001B', '\u200B').forEach { hidden ->
+            assertFalse(report.contains(hidden), "the handoff must not contain U+${hidden.code.toString(16)}")
+        }
+    }
+
+    @Test
     fun `context json has a stable bounded schema and normalized identifiers`() {
         serve(STATUS, TOOLS)
 

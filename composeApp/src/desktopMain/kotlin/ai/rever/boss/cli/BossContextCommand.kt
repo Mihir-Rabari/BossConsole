@@ -23,7 +23,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 private const val AGENT_CONTEXT_SCHEMA_VERSION = 1
@@ -149,7 +148,7 @@ private fun agentHealthOf(health: JsonObject?): BossAgentHealth {
             .orEmpty()
     return BossAgentHealth(
         available = true,
-        degraded = health["degraded"]?.jsonPrimitive?.booleanOrNull,
+        degraded = (health["degraded"] as? JsonPrimitive)?.booleanOrNull,
         findingCodes = findingCodes,
         uncheckedAreas = health.identifiers("unchecked"),
         partialAreas = health.identifiers("partial"),
@@ -323,15 +322,13 @@ private fun healthLine(health: BossAgentHealth): String =
     }
 
 private fun JsonObject.text(key: String): String? =
-    this[key]
-        ?.jsonPrimitive
+    (this[key] as? JsonPrimitive)
         ?.contentOrNull
         ?.let(::safeText)
         ?.takeIf { it.isNotEmpty() }
 
 private fun JsonObject.identifier(key: String): String? =
-    this[key]
-        ?.jsonPrimitive
+    (this[key] as? JsonPrimitive)
         ?.contentOrNull
         ?.let(::safeIdentifier)
         ?.takeIf { it.isNotEmpty() }
@@ -339,7 +336,8 @@ private fun JsonObject.identifier(key: String): String? =
 private fun JsonObject.identifiers(key: String): List<String> =
     (this[key] as? JsonArray)
         ?.mapNotNull {
-            it.jsonPrimitive.contentOrNull
+            (it as? JsonPrimitive)
+                ?.contentOrNull
                 ?.let(::safeIdentifier)
                 ?.takeIf(String::isNotEmpty)
         }?.distinct()
@@ -354,9 +352,43 @@ private fun List<String>.asJsonArray(): JsonArray =
 private fun safeText(raw: String): String =
     McpArgumentSanitizer
         .sanitizeMessage(raw)
-        .replace(Regex("[\\r\\n\\t]+"), " ")
+        .let(::flattenHiddenDisplayCharacters)
         .trim()
         .take(512)
+
+/**
+ * Flattens every hidden-display character - control (Cc, CR/LF/TAB and NEL included), format
+ * (Cf, ZWSP and bidi overrides included), and the Unicode line (Zl) and paragraph (Zp)
+ * separators, CLISecurityValidator's classification - to a plain space, so workspace text
+ * can never smuggle a line break or a bidi override into the terminal-agent handoff. A
+ * supplementary-plane format character (a surrogate pair) becomes one space.
+ */
+private fun flattenHiddenDisplayCharacters(text: String): String =
+    buildString {
+        var index = 0
+        while (index < text.length) {
+            val character = text[index]
+            val next = if (index + 1 < text.length) text[index + 1] else null
+            when {
+                character.category in HIDDEN_DISPLAY_CHARACTERS -> {
+                    append(' ')
+                }
+
+                next != null &&
+                    character.isHighSurrogate() &&
+                    next.isLowSurrogate() &&
+                    isSupplementaryFormatCharacter(character, next) -> {
+                    append(' ')
+                    index += 1
+                }
+
+                else -> {
+                    append(character)
+                }
+            }
+            index += 1
+        }
+    }
 
 /** Names come from installed plugins, so retain only identifier characters in the handoff. */
 private fun safeIdentifier(raw: String): String =
