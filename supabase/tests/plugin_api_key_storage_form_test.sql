@@ -1,5 +1,5 @@
 -- pgTAP tests for the at-rest storage form of plugin-store API key material
--- (20260923123000_plugin_api_key_storage_form).
+-- (20260923172000_plugin_api_key_storage_form).
 -- Run with: supabase test db
 --
 -- The edge function has always hashed keys before INSERT and stored only a
@@ -167,7 +167,8 @@ select throws_ok(
 
 -- ===========================================================================
 -- D. Legacy repair: rows that predate the constraints are brought back into
---    form without breaking the credential
+--    form - dead material is revoked and scrubbed, live conforming keys
+--    keep working
 -- ===========================================================================
 -- Drop both constraints so the suite can seed rows the way a legacy writer
 -- would have written them. They are re-added below; the whole suite runs in
@@ -206,25 +207,31 @@ create temporary table t_repair as
 -- Counts are floor checks, not exact ones: this suite runs against a shared
 -- database that may hold other rows, and every row the repair touches proves
 -- the same invariant. Idempotency below is what pins the exact behaviour.
-select cmp_ok((select hashed from t_repair), '>=', 1::bigint,
-    'the raw key resting in key_hash was hashed in place');
-select cmp_ok((select revoked from t_repair), '>=', 2::bigint,
-    'the garbage row and the twin were revoked, not salvaged');
+select cmp_ok((select revoked from t_repair), '>=', 3::bigint,
+    'the raw-key row, the garbage row and the twin were revoked, none activated or salvaged');
 select cmp_ok((select scrubbed from t_repair), '>=', 2::bigint,
     'the two unmasked prefixes were scrubbed');
 
 select is(
     (select key_hash from public.plugin_api_keys
      where id = 'd0000000-0000-4000-8000-00000000000b'),
-    '6c8d96fc6e16730e4d68f6339efed2b66496022635d49b44fd80fb1057c89c46',
-    'in-place repair is bit-for-bit hashApiKey: sha256 of the raw key, lowercase hex'
+    (select pg_catalog.encode(extensions.digest('d0000000-0000-4000-8000-00000000000b', 'sha256'), 'hex')),
+    'a raw key resting in key_hash is scrubbed to the digest of the row id, never hashed into a live credential'
+);
+
+select ok(
+    (select revoked_at is not null
+       and key_hash <> '6c8d96fc6e16730e4d68f6339efed2b66496022635d49b44fd80fb1057c89c46'
+      from public.plugin_api_keys
+     where id = 'd0000000-0000-4000-8000-00000000000b'),
+    'a key whose plaintext rested readable in key_hash is treated as exposed and revoked, not revived'
 );
 
 select is(
-    (select key_id::text from public.validate_plugin_api_key(
-        '6c8d96fc6e16730e4d68f6339efed2b66496022635d49b44fd80fb1057c89c46') limit 1),
-    'd0000000-0000-4000-8000-00000000000b',
-    'the pre-existing key keeps validating after the repair hashed it in place'
+    (select count(*) from public.validate_plugin_api_key(
+        '6c8d96fc6e16730e4d68f6339efed2b66496022635d49b44fd80fb1057c89c46')),
+    0::bigint,
+    'a raw-key row does not validate after the repair: presenting the original key matches nothing'
 );
 
 select ok(
@@ -262,7 +269,7 @@ create temporary table t_repair2 as
     select * from public.repair_plugin_api_key_material();
 
 select ok(
-    (select hashed = 0 and revoked = 0 and scrubbed = 0 from t_repair2),
+    (select revoked = 0 and scrubbed = 0 from t_repair2),
     'the repair is idempotent: a second run repairs nothing'
 );
 

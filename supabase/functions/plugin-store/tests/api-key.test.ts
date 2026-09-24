@@ -32,10 +32,11 @@ Deno.test("key generation covers the full charset (no folded-away indices)", () 
 })
 
 Deno.test("hashApiKey matches the database's pgcrypto digest bit for bit", async () => {
-  // 20260923123000's in-place repair hashes legacy raw key material with
-  // extensions.digest(..., 'sha256') encoded as lowercase hex. The edge
-  // function must produce the identical digest for the same presented key,
-  // or a key repaired in place stops validating.
+  // 20260923172000 pins key_hash to the pgcrypto digest extensions.digest(...,
+  // 'sha256') encoded as lowercase hex, and its pgTAP suite seeds rows with
+  // digests computed the same way. The edge function must produce the
+  // identical digest for the same presented key, or a minted key can never
+  // match its stored digest.
   assertEquals(
     await hashApiKey("boss_pk_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"),
     "4349a95d0392fccd07d0b88fd040ec4aa14d78df6830129ac31e0c4a465a6ab1",
