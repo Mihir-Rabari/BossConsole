@@ -36,6 +36,9 @@ class GitCloneUrlSafetyTest {
         assertTrue(GitService.isSafeCloneUrl("/srv/git/repo.git"))
         assertTrue(GitService.isSafeCloneUrl("relative/repo"))
         assertTrue(GitService.isSafeCloneUrl("C:\\repos\\repo.git"))
+        // A path may carry `::` after a `/`; only before the first `/` does it mark a
+        // remote-helper invocation, never a path.
+        assertTrue(GitService.isSafeCloneUrl("./ext::sh -c x"))
     }
 
     @Test
@@ -57,14 +60,35 @@ class GitCloneUrlSafetyTest {
     }
 
     @Test
-    fun `validator refuses control characters and over-long URLs`() {
+    fun `validator refuses control characters`() {
         assertFalse(GitService.isSafeCloneUrl("https://example.invalid/repo.git\nforged log line"))
         assertFalse(GitService.isSafeCloneUrl("https://example.invalid/repo.git\r"))
         assertFalse(GitService.isSafeCloneUrl("/srv/git/repo\u0000.git"))
         assertFalse(GitService.isSafeCloneUrl("https://example.invalid/repo\u007F.git"))
-        assertFalse(GitService.isSafeCloneUrl("https://example.invalid/" + "a".repeat(4096)))
+        // The separators a `code < 0x20` check alone misses, covered by isWhitespace()
+        // like [GitService.isSafeRefName]: NEL, LINE SEPARATOR, PARAGRAPH SEPARATOR (#1602).
+        assertFalse(GitService.isSafeCloneUrl("https://example.invalid/repo\u0085.git"))
+        assertFalse(GitService.isSafeCloneUrl("https://example.invalid/repo\u2028.git"))
+        assertFalse(GitService.isSafeCloneUrl("https://example.invalid/repo\u2029.git"))
+        // The plain space is the one whitespace character still allowed.
         assertTrue(GitService.isSafeCloneUrl("/srv/git/my repo.git"))
-        assertTrue(GitService.isSafeCloneUrl("./ext::sh -c x"))
+    }
+
+    @Test
+    fun `validator refuses URLs past the clone length cap`() {
+        assertFalse(GitService.isSafeCloneUrl("https://example.invalid/" + "a".repeat(4096)))
+    }
+
+    @Test
+    fun `validator accepts a URL exactly at the length cap and refuses one char longer`() {
+        // The accept-side boundary of MAX_CLONE_URL_LENGTH (#1602): a URL exactly at the
+        // cap is accepted. Kept apart from the refusals so neither assertion can mask
+        // the other if the cap ever moves.
+        val prefix = "https://example.invalid/"
+        val atCap = prefix + "a".repeat(4096 - prefix.length)
+        assertEquals(4096, atCap.length)
+        assertTrue(GitService.isSafeCloneUrl(atCap))
+        assertFalse(GitService.isSafeCloneUrl(atCap + "a"))
     }
 
     @Test
