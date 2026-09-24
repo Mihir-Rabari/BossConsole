@@ -2,6 +2,7 @@ package ai.rever.boss.mcp
 
 import ai.rever.boss.mcp.sandbox.DefaultMcpRiskEvaluator
 import ai.rever.boss.mcp.sandbox.McpRiskLevel
+import ai.rever.boss.plugin.api.McpToolArgs
 import kotlinx.serialization.Serializable
 
 /**
