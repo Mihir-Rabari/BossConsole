@@ -87,6 +87,50 @@ class FreeTextUserInfoTest {
     }
 
     /**
+     * BossConsole#1639: a protocol-relative authority has no `://`, so the userinfo pass used to skip
+     * it and `filePathPattern` left `[PATH]:CANARY0015@10.0.0.5[PATH]` - the #956 leak without a
+     * scheme.
+     */
+    @Test
+    fun `a protocol-relative url keeps no password`() {
+        val line = "Failed to connect to //alice:CANARY0015@10.0.0.5/x"
+        assertEquals("Failed to connect to [PATH]", LogSanitizer.sanitizeExceptionMessage(line))
+        assertFalse(LogSanitizer.sanitizeLogMessage(line).contains("CANARY0015"))
+        assertFalse(LogSanitizer.sanitizeStackTrace("\tat Client.connect($line)").contains("CANARY0015"))
+    }
+
+    @Test
+    fun `a protocol-relative credential is removed wherever a reference can start`() {
+        listOf(
+            "//u:CANARY0016@10.0.0.5/x",
+            "proxy='//u:CANARY0016@10.0.0.5:3128'",
+            "proxy=\"//u:CANARY0016@10.0.0.5:3128\"",
+            "retry (//u:CANARY0016@10.0.0.5)",
+            "proxy=//u:CANARY0016@10.0.0.5",
+            "hosts //a@10.0.0.4,//u:CANARY0016@10.0.0.5",
+        ).forEach { line ->
+            assertFalse(LogSanitizer.redactUrlUserInfo(line).contains("CANARY0016"), line)
+            assertFalse(LogSanitizer.sanitizeExceptionMessage(line).contains("CANARY0016"), line)
+        }
+        assertEquals(
+            "Failed to connect to //[REDACTED]@10.0.0.5/x",
+            LogSanitizer.redactUrlUserInfo("Failed to connect to //alice:CANARY0017@10.0.0.5/x"),
+        )
+    }
+
+    /** A `//` inside a path or a word is not a reference, so an `@` after it is left alone. */
+    @Test
+    fun `a double slash inside a path or after a third slash is not an authority`() {
+        listOf(
+            "copied /srv//user@host.txt",
+            "see a//b@c",
+            "file:///home/u@x/y",
+            "npm config set //registry.npmjs.org/:_authToken \${TOKEN}",
+            "// TODO ask owner@example.com",
+        ).forEach { line -> assertEquals(line, LogSanitizer.redactUrlUserInfo(line)) }
+    }
+
+    /**
      * The query-parameter pass has to keep running first: its whole job is removing a colon before
      * `filePathPattern` trips on it, so anything inserted ahead of it would be too late.
      */
