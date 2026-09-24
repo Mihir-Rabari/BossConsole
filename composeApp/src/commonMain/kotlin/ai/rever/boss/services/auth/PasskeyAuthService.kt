@@ -8,6 +8,7 @@ import ai.rever.boss.utils.logging.LogCategory
 import ai.rever.boss.utils.logging.LogSanitizer
 import java.util.Base64
 import java.util.UUID
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.ExperimentalTime
 
 /**
