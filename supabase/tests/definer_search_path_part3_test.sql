@@ -1,5 +1,5 @@
 -- pgTAP tests for the part-3 SECURITY DEFINER search_path hardening
--- (20260923120000, BossConsole#1165).
+-- (20260923170000, BossConsole#1165).
 --
 -- Part-1 (20260916130000, #773) and part-2 (20260916140000, #772) pinned
 -- the passkey lifecycle and identity/secret sets; the live catalog audit
@@ -23,7 +23,7 @@
 -- detect. All fixtures roll back with us.
 
 begin;
-select plan(31);
+select plan(32);
 
 -- 1-5: each hardened RPC pins an empty search_path in pg_proc.proconfig.
 -- Array containment (@>) instead of proconfig[1] so a later-added SET
@@ -237,6 +237,17 @@ begin
     execute format('set search_path to hostile_part3, public, %I', pgtap_schema);
 end
 $$;
+
+-- Positive control: the session path really is hostile-first, so an
+-- UNQUALIFIED plugin_downloads read sees the empty hostile_part3 shadow
+-- (0 rows), not the real table (1 row from test 8). If the SET above ever
+-- stops applying, the adversarial assertions below would all pass for the
+-- wrong reason.
+select is(
+    (select count(*)::int from plugin_downloads),
+    0,
+    'the session search_path really is hostile-first (an unqualified read sees the empty shadow, not the real table)'
+);
 
 -- 14-18: all five RPCs still execute under the hostile-first path - the
 -- pin, not the caller, decides where their references resolve.

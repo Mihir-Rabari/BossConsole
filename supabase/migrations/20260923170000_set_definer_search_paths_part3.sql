@@ -17,8 +17,8 @@
 --   log_api_key_action(uuid, text, ...)              INSERT public.plugin_api_key_logs
 --   get_user_api_key_count(uuid)                    read   public.plugin_api_keys
 --
--- 20260803000000 re-pinned the other six plugin-store RPCs but predates
--- none of these - the five were never touched by any later CREATE,
+-- 20260803000000 re-pinned 15 other plugin-store RPCs and touched none
+-- of these five - they were never redefined by any later CREATE,
 -- ALTER or pinning migration (last-CREATE-wins audit across the chain).
 -- All five are reachable from the plugin-store edge function
 -- (utils/auth.ts, routes/api-keys.ts, services/ratings.ts,
