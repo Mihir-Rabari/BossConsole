@@ -196,4 +196,46 @@ class SnippetLibraryManagerTest {
                     .size,
             )
         }
+
+    // -----------------------------------------------------------------
+    // Bounds live in the store, so a writer other than the MCP tool meets them too (#1660 review).
+    // -----------------------------------------------------------------
+
+    @Test
+    fun `the store refuses over-long fields on add and on update`() =
+        runBlocking {
+            val tooLongTitle = "t".repeat(SnippetLibraryManager.MAX_TITLE_CHARS + 1)
+            val tooLongBody = "b".repeat(SnippetLibraryManager.MAX_BODY_CHARS + 1)
+            val tooManyTagChars = listOf("x".repeat(SnippetLibraryManager.MAX_TAGS_CHARS + 1))
+
+            assertFailsWith<IllegalArgumentException> { SnippetLibraryManager.add(tooLongTitle, "b") }
+            assertFailsWith<IllegalArgumentException> { SnippetLibraryManager.add("T", tooLongBody) }
+            assertFailsWith<IllegalArgumentException> { SnippetLibraryManager.add("T", "b", tooManyTagChars) }
+            assertTrue(SnippetLibraryManager.snippets.value.isEmpty(), "a refused add must store nothing")
+
+            val existing = SnippetLibraryManager.add("T", "b")
+            assertFailsWith<IllegalArgumentException> { SnippetLibraryManager.update(existing.id, tooLongTitle, "b") }
+            assertFailsWith<IllegalArgumentException> { SnippetLibraryManager.update(existing.id, "T", tooLongBody) }
+            assertFailsWith<IllegalArgumentException> {
+                SnippetLibraryManager.update(existing.id, "T", "b", tooManyTagChars)
+            }
+            assertEquals("b", SnippetLibraryManager.get(existing.id)?.body, "a refused update must change nothing")
+        }
+
+    @Test
+    fun `a full store refuses an add but not an update`() =
+        runBlocking {
+            val full =
+                (1..SnippetLibraryManager.MAX_SNIPPETS).map { Snippet(id = "snippet-$it", title = "s$it", body = "b") }
+            tempFile.writeText(json.encodeToString(SnippetLibrary.serializer(), SnippetLibrary(full)))
+            SnippetLibraryManager.resetForTesting(tempFile)
+
+            assertFailsWith<SnippetLibraryManager.LibraryFullException> { SnippetLibraryManager.add("one more", "b") }
+            assertEquals(SnippetLibraryManager.MAX_SNIPPETS, SnippetLibraryManager.snippets.value.size)
+            // Ends in an assertion returning Unit: ending in assertNotNull would make this a function
+            // returning Snippet, and JUnit silently skips a test method that is not void.
+            val renamed = SnippetLibraryManager.update("snippet-1", "renamed", "b")
+            assertNotNull(renamed, "an update does not grow the library")
+            assertEquals("renamed", SnippetLibraryManager.get("snippet-1")?.title)
+        }
 }

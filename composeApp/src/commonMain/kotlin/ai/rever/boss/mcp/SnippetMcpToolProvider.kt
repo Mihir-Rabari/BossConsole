@@ -7,6 +7,10 @@ import ai.rever.boss.plugin.api.McpToolProvider
 import ai.rever.boss.plugin.api.McpToolResult
 import ai.rever.boss.snippets.Snippet
 import ai.rever.boss.snippets.SnippetLibraryManager
+import ai.rever.boss.snippets.SnippetLibraryManager.MAX_BODY_CHARS
+import ai.rever.boss.snippets.SnippetLibraryManager.MAX_SNIPPETS
+import ai.rever.boss.snippets.SnippetLibraryManager.MAX_TAGS_CHARS
+import ai.rever.boss.snippets.SnippetLibraryManager.MAX_TITLE_CHARS
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -32,6 +36,16 @@ import kotlinx.serialization.json.put
 object SnippetMcpToolProvider : McpToolProvider {
     override val providerId: String = "boss-snippets"
 
+    /** A page an agent can read in one go. */
+    internal const val DEFAULT_LIST_LIMIT = 50
+
+    /**
+     * The most one call returns. Below [SnippetLibraryManager.MAX_SNIPPETS] on purpose: were the two
+     * equal, clamping to it would bound nothing a full library does not already bound, and one
+     * allowed-without-asking call could still take the whole library.
+     */
+    internal const val MAX_LIST_LIMIT = 100
+
     override fun tools(): List<McpToolDefinition> =
         listOf(
             createListTool("snippets_list"),
@@ -44,13 +58,23 @@ object SnippetMcpToolProvider : McpToolProvider {
     private fun createListTool(name: String): McpToolDefinition =
         McpToolDefinition(
             name = name,
-            description = "List stored prompt/command snippets, optionally filtered to a single tag.",
+            description =
+                "List stored prompt/command snippets, optionally filtered to a single tag. Returns at most " +
+                    "'limit' entries (default $DEFAULT_LIST_LIMIT, at most $MAX_LIST_LIMIT) starting at 'offset'; " +
+                    "'total' says how many match.",
             inputSchema =
                 """
                 {
                     "type": "object",
                     "properties": {
-                        "tag": { "type": "string", "description": "Optional tag to filter by (case-insensitive)" }
+                        "tag": { "type": "string", "description": "Optional tag to filter by (case-insensitive)" },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": $MAX_LIST_LIMIT,
+                            "description": "Maximum entries to return"
+                        },
+                        "offset": { "type": "integer", "minimum": 0, "description": "Entries to skip, for paging" }
                     }
                 }
                 """.trimIndent(),
@@ -88,9 +112,9 @@ object SnippetMcpToolProvider : McpToolProvider {
                     "type": "object",
                     "properties": {
                         "id": { "type": "string", "description": "Existing snippet id to update; omit to create" },
-                        "title": { "type": "string", "description": "Short human-readable title" },
-                        "body": { "type": "string", "description": "The prompt or command text" },
-                        "tags": { "type": "string", "description": "Comma-separated tags" }
+                        "title": { "type": "string", "maxLength": $MAX_TITLE_CHARS, "description": "Short human-readable title" },
+                        "body": { "type": "string", "maxLength": $MAX_BODY_CHARS, "description": "The prompt or command text" },
+                        "tags": { "type": "string", "maxLength": $MAX_TAGS_CHARS, "description": "Comma-separated tags" }
                     },
                     "required": ["title", "body"]
                 }
@@ -117,21 +141,36 @@ object SnippetMcpToolProvider : McpToolProvider {
             readOnly = false,
         )
 
+    /**
+     * Paged, because this is read-only and so allowed without asking. Bodies were already left out;
+     * the count was not bounded by anything, since the library had no size at all.
+     *
+     * Two things a caller should not assume. `offset` is a position, not a stable cursor: a save or
+     * delete between two pages shifts every later entry, so a walk can skip or repeat one. And a
+     * `limit` that is not an integer (a string, a fraction, a number past Int) is treated as absent,
+     * so it gets [DEFAULT_LIST_LIMIT] rather than an error.
+     */
     private fun handleList(args: McpToolArgs): McpToolResult {
         val tag = args.string("tag")
-        val snippets =
+        val limit = (args.int("limit") ?: DEFAULT_LIST_LIMIT).coerceIn(1, MAX_LIST_LIMIT)
+        val offset = (args.int("offset") ?: 0).coerceAtLeast(0)
+        val matching =
             if (tag.isNullOrBlank()) {
                 SnippetLibraryManager.snippets.value
             } else {
                 SnippetLibraryManager.byTag(tag)
             }
+        val page = matching.drop(offset).take(limit)
         val response =
             buildJsonObject {
                 put("success", true)
+                put("total", matching.size)
+                put("offset", offset)
+                put("returned", page.size)
                 put(
                     "snippets",
                     buildJsonArray {
-                        snippets.forEach { add(summaryJson(it)) }
+                        page.forEach { add(summaryJson(it)) }
                     },
                 )
             }
@@ -160,6 +199,9 @@ object SnippetMcpToolProvider : McpToolProvider {
         if (body == null) {
             return McpToolResult("body is required", isError = true)
         }
+        // The store enforces the same limits; checking here first is what lets the refusal name the
+        // field and its limit, rather than cut the prompt or surface the store's exception.
+        tooLong(args)?.let { return McpToolResult(it, isError = true) }
         // Absent 'tags' means "keep the existing set" on update; an explicit
         // empty string clears it.
         val tags = args.string("tags")?.let(::parseTags)
@@ -167,7 +209,17 @@ object SnippetMcpToolProvider : McpToolProvider {
 
         val saved =
             if (id.isNullOrBlank()) {
-                SnippetLibraryManager.add(title, body, tags.orEmpty())
+                // The size is checked by the store under its lock, so two creates racing at one
+                // below the limit cannot both land; a check here, outside it, could not promise that.
+                try {
+                    SnippetLibraryManager.add(title, body, tags.orEmpty())
+                } catch (_: SnippetLibraryManager.LibraryFullException) {
+                    return McpToolResult(
+                        "The snippet library is full ($MAX_SNIPPETS snippets). Delete one, or update an " +
+                            "existing snippet by passing its 'id'.",
+                        isError = true,
+                    )
+                }
             } else {
                 SnippetLibraryManager.update(id, title, body, tags)
                     ?: return McpToolResult("Snippet '$id' not found; omit 'id' to create a new one", isError = true)
@@ -192,6 +244,16 @@ object SnippetMcpToolProvider : McpToolProvider {
             McpToolResult("Snippet '$id' not found", isError = true)
         }
     }
+
+    private fun tooLong(args: McpToolArgs): String? =
+        listOf(
+            "title" to MAX_TITLE_CHARS,
+            "body" to MAX_BODY_CHARS,
+            "tags" to MAX_TAGS_CHARS,
+        ).firstNotNullOfOrNull { (field, max) ->
+            val length = args.string(field)?.length ?: 0
+            if (length > max) "$field is $length characters; the limit is $max" else null
+        }
 
     /** Comma-separated tags to a trimmed, non-empty list. */
     private fun parseTags(s: String?): List<String> = s.orEmpty().split(',').mapNotNull { it.trim().ifEmpty { null } }

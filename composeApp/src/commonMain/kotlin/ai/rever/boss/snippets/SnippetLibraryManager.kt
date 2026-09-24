@@ -35,6 +35,29 @@ import java.io.File
 object SnippetLibraryManager {
     private val logger = BossLogger.forComponent("SnippetLibraryManager")
 
+    /**
+     * The library's bounds, enforced here rather than by one caller so every writer meets them.
+     * The MCP tool is the only writer today, and it names these limits to its caller before they
+     * are hit; a settings panel or a plugin-facing accessor added later would otherwise bypass them.
+     *
+     * The bound they produce together, which is the number to agree to: 500 x (200 + 20,000 + 500)
+     * characters, about 10 MB of snippet text, rewritten in full on every save and parsed
+     * synchronously by [loadSync] at startup. [MAX_BODY_CHARS] is the lever if that is too much.
+     */
+    const val MAX_SNIPPETS = 500
+
+    /** A title a person scans in a picker. */
+    const val MAX_TITLE_CHARS = 200
+
+    /** A long prompt fits; a document does not. */
+    const val MAX_BODY_CHARS = 20_000
+
+    /** All of a snippet's tags together. */
+    const val MAX_TAGS_CHARS = 500
+
+    /** Thrown by [add] when the library already holds [MAX_SNIPPETS]. Updates never grow it. */
+    class LibraryFullException : IllegalStateException("The snippet library is full ($MAX_SNIPPETS snippets)")
+
     private val defaultStorageFile = BossDirectories.resolve("snippets.json")
 
     /**
@@ -123,7 +146,11 @@ object SnippetLibraryManager {
         tags: List<String> = emptyList(),
     ): Snippet {
         require(title.isNotBlank()) { "Snippet title must not be blank" }
+        requireWithinBounds(title, body, tags)
         return mutex.withLock {
+            // Under the lock, with the write that follows: checked outside it, two concurrent
+            // creates that both see MAX_SNIPPETS - 1 would both land.
+            if (_snippets.value.size >= MAX_SNIPPETS) throw LibraryFullException()
             val now = clock()
             val snippet =
                 Snippet(
@@ -155,6 +182,7 @@ object SnippetLibraryManager {
         tags: List<String>? = null,
     ): Snippet? {
         require(title.isNotBlank()) { "Snippet title must not be blank" }
+        requireWithinBounds(title, body, tags)
         return mutex.withLock {
             val current = _snippets.value
             val existing = current.firstOrNull { it.id == id } ?: return@withLock null
@@ -215,4 +243,24 @@ object SnippetLibraryManager {
                 throw e
             }
         }
+}
+
+/**
+ * [SnippetLibraryManager]'s field bounds, shared by its add and update. Tags are bounded by their
+ * total length, which is at most the length of the comma-separated string the MCP tool measures.
+ */
+private fun requireWithinBounds(
+    title: String,
+    body: String,
+    tags: List<String>?,
+) {
+    require(title.length <= SnippetLibraryManager.MAX_TITLE_CHARS) {
+        "Snippet title is over ${SnippetLibraryManager.MAX_TITLE_CHARS} characters"
+    }
+    require(body.length <= SnippetLibraryManager.MAX_BODY_CHARS) {
+        "Snippet body is over ${SnippetLibraryManager.MAX_BODY_CHARS} characters"
+    }
+    require((tags?.sumOf { it.length } ?: 0) <= SnippetLibraryManager.MAX_TAGS_CHARS) {
+        "Snippet tags are over ${SnippetLibraryManager.MAX_TAGS_CHARS} characters"
+    }
 }
