@@ -43,7 +43,7 @@ function installGateError(
 
 /**
  * Organisation visibility and publication state are enforced inside the serve
- * RPC (get_plugin_for_download, migration 20260920000000): its WHERE clause
+ * RPC (get_plugin_for_download, migration 20260923150000): its WHERE clause
  * is user_can_install_plugin, so no row means this caller may not have the
  * artifact, and the route answers the same 404 it would for a missing plugin.
  * The route-level canInstall probe that used to live here ran only on rows the
@@ -211,6 +211,11 @@ download.openapi(downloadLatestRoute, async (ctx) => {
       // Don't fail the request if tracking fails
     }
 
+    // PRIVATE when the answer depends on who asked. The same URL hands an entitled
+    // member a signed download URL and everybody else a 404, so a shared cache
+    // holding one reader's copy would leak it to the next caller. Mirrors browse.ts.
+    ctx.header("Cache-Control", "private, no-store")
+
     return ctx.json({
       downloadUrl,
       sha256: version.sha256,
@@ -369,6 +374,11 @@ download.openapi(downloadVersionRoute, async (ctx) => {
     } catch (e) {
       console.error('Error tracking download:', e)
     }
+
+    // PRIVATE when the answer depends on who asked. The same URL hands an entitled
+    // member a signed download URL and everybody else a 404, so a shared cache
+    // holding one reader's copy would leak it to the next caller. Mirrors browse.ts.
+    ctx.header("Cache-Control", "private, no-store")
 
     return ctx.json({
       downloadUrl,

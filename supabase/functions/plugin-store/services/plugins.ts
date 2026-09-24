@@ -423,7 +423,7 @@ export async function updatePlugin(
 /**
  * Resolve a plugin for the DOWNLOAD path, gated by the install predicate.
  *
- * get_plugin_for_download (migration 20260920000000) returns a row only when
+ * get_plugin_for_download (migration 20260923150000) returns a row only when
  * user_can_install_plugin(p_viewer_id, id) admits the caller, so publication
  * state and organisation entitlements are enforced inside the RPC and a
  * refused caller is indistinguishable from a missing plugin. The viewer is

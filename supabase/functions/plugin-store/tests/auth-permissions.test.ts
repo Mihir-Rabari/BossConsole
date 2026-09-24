@@ -444,7 +444,7 @@ Deno.test("both download handlers resolve the plugin through the serve RPC befor
   const handlers = src.match(/download\.openapi\(/g)?.length ?? 0
   assertEquals(handlers, 2, "the two download handlers")
 
-  // The serve RPC (get_plugin_for_download, migration 20260920000000) is where
+  // The serve RPC (get_plugin_for_download, migration 20260923150000) is where
   // publication state and organisation entitlements are enforced: its WHERE
   // clause IS user_can_install_plugin, so a row the caller may not have never
   // reaches this route. An ungated download handler serves another

@@ -1,4 +1,4 @@
--- pgTAP tests for get_plugin_for_download (migration 20260920000000), the
+-- pgTAP tests for get_plugin_for_download (migration 20260923150000), the
 -- serve RPC on the plugin-store download path.
 -- Run with: cat supabase/tests/plugin_download_serve_rpc_test.sql | docker exec -i supabase_db_boss-main psql -U postgres -d postgres
 --
