@@ -1,11 +1,20 @@
 package ai.rever.boss.mcp
 
+import ai.rever.boss.components.window_panel.SplitViewState
+import ai.rever.boss.components.window_panel.SplitViewStateRegistry
 import ai.rever.boss.components.workspaces.LAST_SESSION_ID
 import ai.rever.boss.components.workspaces.LAST_SESSION_SET_FILE
 import ai.rever.boss.components.workspaces.SPACE_THEMES_FILE
 import ai.rever.boss.components.workspaces.WorkspaceFileManager
 import ai.rever.boss.components.workspaces.WorkspaceFileManagerCommon
 import ai.rever.boss.components.workspaces.reservedWorkspaceStoreFileName
+import ai.rever.boss.plugin.api.TabComponentWithUI
+import ai.rever.boss.plugin.api.TabInfo
+import ai.rever.boss.plugin.api.TabRegistry
+import ai.rever.boss.plugin.api.TabTypeInfo
+import ai.rever.boss.plugin.tab.terminal.TerminalTabType
+import androidx.compose.runtime.Composable
+import com.arkivanov.decompose.ComponentContext
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.nio.file.Files
@@ -33,6 +42,7 @@ import kotlin.test.assertTrue
  */
 class WorkspaceReservedStoreNameTest {
     private val tempDirs = mutableListOf<File>()
+    private val createdSplitViewStates = mutableListOf<SplitViewState>()
     private lateinit var workspaceDir: File
     private lateinit var fileManager: WorkspaceFileManager
 
@@ -45,7 +55,18 @@ class WorkspaceReservedStoreNameTest {
         WorkspaceMcpToolProvider.fileManagerProvider = { fileManager }
         // The reserved-name gate sits in the CREATE branch, which is reached after window
         // resolution - same harness as WorkspaceMcpToolProviderTest.
-        WorkspaceMcpToolProvider.windowCreator = { "test-window-reserved-1" }
+        // A real window registers its SplitViewState as it composes; open_workspace now
+        // awaits that, so the harness window must register too - same shape as
+        // WorkspaceMcpToolProviderTest.
+        WorkspaceMcpToolProvider.windowCreator = {
+            "test-window-reserved-1".also { id ->
+                if (!SplitViewStateRegistry.isRegistered(id)) {
+                    val state = SplitViewState(stubTabRegistry, id)
+                    createdSplitViewStates.add(state)
+                    SplitViewStateRegistry.register(id, state)
+                }
+            }
+        }
         WorkspaceMcpToolProvider.splitViewStateResolver = { null }
         WorkspaceMcpToolProvider.splitViewWaitTimeoutMs = 50L
     }
@@ -56,6 +77,11 @@ class WorkspaceReservedStoreNameTest {
         WorkspaceMcpToolProvider.windowCreator = null
         WorkspaceMcpToolProvider.splitViewStateResolver = null
         WorkspaceMcpToolProvider.splitViewWaitTimeoutMs = 5000L
+        SplitViewStateRegistry.getAllStates().keys.forEach {
+            SplitViewStateRegistry.unregister(it)
+        }
+        createdSplitViewStates.forEach { it.dispose() }
+        createdSplitViewStates.clear()
         tempDirs.forEach { it.deleteRecursively() }
         tempDirs.clear()
     }
@@ -208,4 +234,19 @@ class WorkspaceReservedStoreNameTest {
         assertNull(reservedWorkspaceStoreFileName(""))
         assertNull(reservedWorkspaceStoreFileName(".json"))
     }
+
+    private class StubTabComponent(
+        ctx: ComponentContext,
+        override val config: TabInfo,
+        override val tabTypeInfo: TabTypeInfo,
+    ) : TabComponentWithUI,
+        ComponentContext by ctx {
+        @Composable
+        override fun Content() = Unit
+    }
+
+    private val stubTabRegistry =
+        TabRegistry().apply {
+            registerTabType(TerminalTabType) { config, ctx -> StubTabComponent(ctx, config, TerminalTabType) }
+        }
 }
