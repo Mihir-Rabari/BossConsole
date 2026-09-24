@@ -454,8 +454,7 @@ class McpPolicyEngine(
             // that belongs in the policy dialog, not in a queued approval's write.
             if (preserveDeny &&
                 action != McpPolicyAction.DENY &&
-                _config.value.rules[toolName] == McpPolicyAction.DENY &&
-                _config.value.ruleProviders[toolName]?.let { it != providerId } == true
+                persistedDenyEarnedByOtherProvider(toolName, providerId)
             ) {
                 return@synchronized false
             }
@@ -468,6 +467,17 @@ class McpPolicyEngine(
                 faultFor = { k, e -> McpPolicyFault.PolicyPersistFailed(k, e) },
             )
         }
+
+    /**
+     * A persisted [toolName] rule that is a DENY earned by a provider other than [providerId]:
+     * invisible to [policyFor] for this caller, yet a write here would replace and re-scope it.
+     */
+    private fun persistedDenyEarnedByOtherProvider(
+        toolName: String,
+        providerId: String?,
+    ): Boolean =
+        _config.value.rules[toolName] == McpPolicyAction.DENY &&
+            _config.value.ruleProviders[toolName]?.let { it != providerId } == true
 
     /**
      * The proactive path's write: set a persistent rule for [toolName], but only while it still
