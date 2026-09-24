@@ -201,4 +201,72 @@ class WorkspaceManagerRaceTest {
             blocker.deleteRecursively()
         }
     }
+
+    /**
+     * The startup scan is the other racer, and the lock orders it rather than shielding it: the
+     * scan reads disk WITHOUT the lock and only its publish takes it, so a mutation that lands
+     * while the scan is reading - an MCP `registerWorkspace`, whose file the scan never looks at,
+     * or a save - must survive the publish. Before the publish merged, it replaced the list
+     * wholesale and the register's row was lost for good.
+     *
+     * The interleaving is forced, not hoped for: Main is pinned before construction so the
+     * manager's own scan coroutine runs until its first IO hop and suspends there, and each
+     * seeded file costs the scan one further IO round-trip - so the register, which commits
+     * inline on the test thread with no IO at all, lands while the scan is provably still
+     * reading.
+     */
+    @Test
+    fun `a register and a save landing mid-scan survive the publish`() {
+        val directory = Files.createTempDirectory("workspace-race").toFile()
+        try {
+            // Forty-one saved Spaces: one the scan must find, plus enough filler that its read
+            // phase outlasts the mutations issued the instant the constructor returns.
+            val alpha = space("race-mid-scan-alpha", "Alpha")
+            fileFor(directory, alpha.id).writeText(WorkspaceSerializer.serialize(alpha))
+            repeat(40) { index ->
+                val filler = space("race-mid-scan-filler-$index", "Filler $index")
+                fileFor(directory, filler.id).writeText(WorkspaceSerializer.serialize(filler))
+            }
+
+            Dispatchers.setMain(UnconfinedTestDispatcher())
+            val manager = WorkspaceManager(directory.absolutePath)
+            // From here the scan is in flight: it has listed the directory and is reading the
+            // files one IO hop at a time, nowhere near the publish.
+
+            // The MCP create_workspace door - a row whose file the scan never sees.
+            val beta = space("race-mid-scan-beta", "Beta")
+            manager.registerWorkspace(beta)
+            assertTrue(
+                manager.workspaces.value.any { it.id == beta.id },
+                "the register must commit before the scan publishes, or this is not the mid-scan " +
+                    "race the fix is for",
+            )
+
+            // And a save of that same Space, issued while the scan is still reading.
+            manager.loadWorkspace(beta)
+            manager.saveCurrentWorkspace(name = "Kept")
+
+            // Only the publish lists the shipped layouts, so waiting for one is waiting for the
+            // scan's result to land. The save holds the lock across its write, so the publish
+            // runs after it.
+            runBlocking {
+                manager.workspaces.first { list -> list.any { it.id in PredefinedWorkspaces.allIds } }
+            }
+            settle(manager)
+
+            assertEquals(
+                "Kept",
+                manager.workspaces.value.single { it.id == beta.id }.name,
+                "the register and the save made while the scan was reading must survive the " +
+                    "publish, not be overwritten by its wholesale result",
+            )
+            assertTrue(
+                manager.workspaces.value.any { it.id == alpha.id },
+                "what the scan found must still be listed after the merge",
+            )
+        } finally {
+            Dispatchers.resetMain()
+            directory.deleteRecursively()
+        }
+    }
 }

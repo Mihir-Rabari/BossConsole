@@ -166,6 +166,17 @@ class WorkspaceManager(
     internal val mutations = Mutex()
 
     /**
+     * Whether the startup scan has published. Until it has, a delete that lands records its id in
+     * [idsDeletedBeforeScanPublish]: the scan may already have read that Space's file, and without
+     * the record the publish would list the Space again beside a file that is gone. See
+     * `mergeScanIntoCurrent`.
+     */
+    private var startupScanPublished = false
+
+    /** Ids deleted under [mutations] while the startup scan was still reading. */
+    private val idsDeletedBeforeScanPublish = mutableSetOf<String>()
+
+    /**
      * The file each Space was LOADED from, by id, for the ones whose path predates
      * [WorkspaceFileManagerCommon.fileNameForId].
      *
@@ -385,10 +396,20 @@ class WorkspaceManager(
             // Space was a built-in - which is the Save button not working. See
             // `mergeSavedWorkspaces`, which also says what becomes of a legacy file whose id IS a
             // built-in's.
-            // Published under the mutation lock: a save, delete or MCP register admitted
-            // while the scan was reading disk must not be overwritten by the wholesale result.
+            // And the scan's answer is merged INTO the registry under the lock, not written over
+            // it: a save, delete or MCP register admitted while the scan was reading disk is the
+            // newer decision and must survive the seed. See `mergeScanIntoCurrent`, which also
+            // says what becomes of a Space deleted mid-scan.
             mutations.withLock {
-                _workspaces.value = mergeSavedWorkspaces(PredefinedWorkspaces.allWorkspaces, saved)
+                startupScanPublished = true
+                val deletedSinceScanStarted = idsDeletedBeforeScanPublish.toHashSet()
+                idsDeletedBeforeScanPublish.clear()
+                _workspaces.value =
+                    mergeScanIntoCurrent(
+                        _workspaces.value,
+                        mergeSavedWorkspaces(PredefinedWorkspaces.allWorkspaces, saved),
+                        deletedSinceScanStarted,
+                    )
             }
         }
     }
@@ -733,6 +754,9 @@ class WorkspaceManager(
                     // Update state on Main thread
                     _workspaces.value = _workspaces.value.filter { it.id != workspaceId }
                     loadedFileNames.remove(workspaceId)
+                    // Recorded until the startup scan publishes: that scan may have read this
+                    // Space's file before the delete removed it, and must not list it again.
+                    if (!startupScanPublished) idsDeletedBeforeScanPublish.add(workspaceId)
 
                     // Notify that workspace was deleted (this will cleanup tabs)
                     onWorkspaceDeleted?.invoke(workspaceId)
