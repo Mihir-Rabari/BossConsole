@@ -14,7 +14,7 @@ import kotlin.test.assertTrue
  * gave them the mutating default - but DefaultMcpRiskEvaluator let every one of
  * them fall through to the Unclassified LOW default, so the operator-facing risk
  * reason in the approval dialog and the MCP activity log said "Unclassified -
- * defaulting to low risk" about six mutating tools. These tests pin the explicit
+ * defaulting to low risk" about six mutating tools. These tests pin that explicit
  * classification: all ten family names must classify with a category reason and
  * land in the tier the approval flow leans on.
  *
