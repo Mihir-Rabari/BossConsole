@@ -43,7 +43,13 @@ class IpcTransportLimits(
         require(maxInboundMessageBytes > 0) { "maxInboundMessageBytes must be positive" }
         require(maxInboundMetadataBytes > 0) { "maxInboundMetadataBytes must be positive" }
         require(maxConcurrentCallsPerConnection > 0) { "maxConcurrentCallsPerConnection must be positive" }
-        require(maxConnectionIdleMillis > 0) { "maxConnectionIdleMillis must be positive" }
+        // NettyServerBuilder.maxConnectionIdle clamps any window shorter than one second up to
+        // one second, so a value below MIN_CONNECTION_IDLE_MILLIS would not fail here yet would
+        // silently widen on the transport.
+        require(maxConnectionIdleMillis >= MIN_CONNECTION_IDLE_MILLIS) {
+            "maxConnectionIdleMillis must be at least $MIN_CONNECTION_IDLE_MILLIS; " +
+                "grpc-netty clamps shorter windows up to one second"
+        }
     }
 
     /** The reader bounds, applied to the kernel side of the socket. */
@@ -72,5 +78,11 @@ class IpcTransportLimits(
 
         /** Two minutes without any RPC in flight closes the connection; live RPCs keep it open. */
         const val DEFAULT_MAX_CONNECTION_IDLE_MILLIS: Long = 120_000
+
+        /**
+         * The effective floor of the idle window: NettyServerBuilder.maxConnectionIdle clamps any
+         * shorter duration up to one second, so anything below this is not a valid pin.
+         */
+        const val MIN_CONNECTION_IDLE_MILLIS: Long = 1_000
     }
 }
