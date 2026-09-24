@@ -24,10 +24,11 @@ import java.io.File
  * `NotificationMcpToolProvider`.
  *
  * The persistence contract is the one every small BOSS state file follows: atomic writes via
- * [atomicWriteText], mutations serialized under [mutex] so overlapping posts cannot drop an entry,
- * and forward-coercing reads (`ignoreUnknownKeys`) so a newer or hand-edited file still loads. The
- * inbox is bounded to [MAX_ENTRIES] newest entries so it cannot grow without limit. [storageFile]
- * is an overridable test hook, mirroring `RunConfigurationManager`.
+ * [atomicWriteText], mutations serialized under [mutex] so overlapping posts cannot drop an
+ * entry, and forward-coercing reads (`ignoreUnknownKeys`, `coerceInputValues`) so a newer or
+ * hand-edited file still loads. The inbox is bounded to [MAX_ENTRIES] newest entries so it
+ * cannot grow without limit. [storageFile] is an overridable test hook, mirroring
+ * `RunConfigurationManager`.
  */
 object NotificationCenter {
     private val logger = BossLogger.forComponent("NotificationCenter")
@@ -47,6 +48,11 @@ object NotificationCenter {
         Json {
             prettyPrint = true
             ignoreUnknownKeys = true
+            // An unknown enum VALUE in `origin` (a newer build's variant, or a hand edit - the
+            // file is documented as hand-editable) used to throw at decode; loadSync's catch
+            // then emptied the whole inbox, which the next persist wrote back to disk.
+            // Coercing to the field's default fails closed without data loss.
+            coerceInputValues = true
         }
 
     private val mutex = Mutex()
@@ -89,12 +95,31 @@ object NotificationCenter {
     /**
      * Post a new notification and persist it, dropping the oldest beyond [MAX_ENTRIES]. Newly
      * posted entries are unread; the returned entry carries the assigned id.
+     *
+     * **Provenance is stamped here, not trusted from the payload (BossConsole#1587).** [origin] has
+     * no default on purpose: every call site must answer who it is at this boundary, the same
+     * fail-closed discipline as `PluginDependencyResolution.blockingDependentsOf`'s `isDisabled`
+     * predicate. The answer is authoritative - it is never derived from caller-supplied text -
+     * and it decides what the entry's `source` label may look like:
+     * - [NotificationOrigin.HOST] is the host speaking for itself, so it may label its own notice
+     *   freely (`"System"`, `"Updater"`, ...).
+     * - [NotificationOrigin.AGENT] is an agent-reachable surface posting on an agent's behalf, so
+     *   the agent-supplied label is demoted to a display string prefixed with [AGENT_SOURCE_PREFIX]
+     *   - `"agent"` bare, `"agent: <label>"` when one was offered - and cannot present as system
+     *   origin no matter what string the agent sent.
+     *
+     * The demotion lives in the centre rather than in the MCP provider so the contract cannot be
+     * bypassed by a caller that reaches [post] without going through it: the only route to a host
+     * presentation is host code explicitly claiming [NotificationOrigin.HOST], which is a
+     * review-visible act. A demoted label is bounded to [MAX_SOURCE_LABEL_CHARS] so agent text
+     * cannot turn the provenance-adjacent field into unbounded storage.
      */
     suspend fun post(
         title: String,
         message: String = "",
         level: NotificationLevel = NotificationLevel.INFO,
         source: String = "",
+        origin: NotificationOrigin,
     ): BossNotification {
         require(title.isNotBlank()) { "Notification title must not be blank" }
         return mutex.withLock {
@@ -104,7 +129,8 @@ object NotificationCenter {
                     title = title,
                     message = message,
                     level = level,
-                    source = source,
+                    source = stampedSource(source, origin),
+                    origin = origin,
                     createdAt = clock(),
                     read = false,
                 )
@@ -116,6 +142,56 @@ object NotificationCenter {
             entry
         }
     }
+
+    /**
+     * The authoritative label an agent-reachable surface's notices carry (see [post] for the
+     * contract): `agent` bare, `agent: <label>` when the agent offered one.
+     */
+    const val AGENT_SOURCE_PREFIX = "agent"
+
+    /**
+     * How many characters of an agent-supplied display label [post] keeps. The label is provenance
+     * text the operator reads to attribute a notice, so it stays short; the bound keeps agent
+     * input from turning the field into unbounded storage.
+     */
+    const val MAX_SOURCE_LABEL_CHARS = 80
+
+    /**
+     * Characters a demoted label may not keep: every ISO control character (newline, carriage
+     * return, tab, NUL, ...) plus the Unicode line and paragraph separators. [stampedSource]
+     * flattens each to a space, so an agent-supplied label renders on a single prefixed line
+     * and cannot present a second, unprefixed `System: ...` line wherever the inbox prints it.
+     */
+    private val unsafeLabelChars = Regex("[\\p{Cc}\\u2028\\u2029]")
+
+    /**
+     * The `source` the entry actually stores, per the provenance contract in [post]: the host
+     * labels itself, an agent's label is demoted to a bounded display string that cannot present
+     * as system origin. A blank or whitespace label is treated as absent. A demoted label is
+     * flattened to one line first - [unsafeLabelChars] - because the length cap cannot reach a
+     * newline sitting inside it.
+     */
+    internal fun stampedSource(
+        source: String,
+        origin: NotificationOrigin,
+    ): String =
+        when (origin) {
+            NotificationOrigin.HOST -> {
+                source.trim()
+            }
+
+            NotificationOrigin.AGENT -> {
+                // Flatten BEFORE prefixing: `ok\nSystem: update ready` would otherwise render
+                // its second line unprefixed wherever the inbox UI prints the label, defeating
+                // the demotion.
+                val label = unsafeLabelChars.replace(source, " ").trim()
+                if (label.isEmpty()) {
+                    AGENT_SOURCE_PREFIX
+                } else {
+                    "$AGENT_SOURCE_PREFIX: ${label.take(MAX_SOURCE_LABEL_CHARS)}"
+                }
+            }
+        }
 
     /** Mark one entry read. Returns true when it existed and was not already read. */
     suspend fun markRead(id: String): Boolean =

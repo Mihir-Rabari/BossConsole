@@ -46,8 +46,8 @@ class NotificationCenterTest {
     @Test
     fun `post persists and survives a reload, newest first`() =
         runBlocking {
-            NotificationCenter.post("First")
-            NotificationCenter.post("Second", "body", NotificationLevel.WARNING, "task-a")
+            NotificationCenter.post("First", origin = NotificationOrigin.HOST)
+            NotificationCenter.post("Second", "body", NotificationLevel.WARNING, "task-a", NotificationOrigin.HOST)
 
             NotificationCenter.resetForTesting(tempFile)
             val all = NotificationCenter.notifications.value
@@ -55,20 +55,23 @@ class NotificationCenterTest {
             assertEquals("Second", all.first().title, "newest first")
             assertEquals(NotificationLevel.WARNING, all.first().level)
             assertEquals("task-a", all.first().source)
+            assertEquals(NotificationOrigin.HOST, all.first().origin, "stamped origin survives a reload")
         }
 
     @Test
     fun `a blank title is rejected`() {
         runBlocking {
-            assertFailsWith<IllegalArgumentException> { NotificationCenter.post("  ") }
+            assertFailsWith<IllegalArgumentException> {
+                NotificationCenter.post("  ", origin = NotificationOrigin.HOST)
+            }
         }
     }
 
     @Test
     fun `unreadCount and markRead behave`() =
         runBlocking {
-            val a = NotificationCenter.post("A")
-            NotificationCenter.post("B")
+            val a = NotificationCenter.post("A", origin = NotificationOrigin.HOST)
+            NotificationCenter.post("B", origin = NotificationOrigin.HOST)
             assertEquals(2, NotificationCenter.unreadCount())
 
             assertTrue(NotificationCenter.markRead(a.id))
@@ -80,8 +83,8 @@ class NotificationCenterTest {
     @Test
     fun `markAllRead reports the number changed`() =
         runBlocking {
-            NotificationCenter.post("A")
-            NotificationCenter.post("B")
+            NotificationCenter.post("A", origin = NotificationOrigin.HOST)
+            NotificationCenter.post("B", origin = NotificationOrigin.HOST)
             assertEquals(2, NotificationCenter.markAllRead())
             assertEquals(0, NotificationCenter.unreadCount())
             assertEquals(0, NotificationCenter.markAllRead(), "nothing left to change")
@@ -90,7 +93,7 @@ class NotificationCenterTest {
     @Test
     fun `clear empties the inbox`() =
         runBlocking {
-            NotificationCenter.post("A")
+            NotificationCenter.post("A", origin = NotificationOrigin.HOST)
             assertEquals(1, NotificationCenter.clear())
             assertTrue(NotificationCenter.notifications.value.isEmpty())
             assertEquals(0, NotificationCenter.clear())
@@ -101,7 +104,9 @@ class NotificationCenterTest {
         runBlocking {
             var t = 0L
             NotificationCenter.clock = { t++ }
-            repeat(NotificationCenter.MAX_ENTRIES + 25) { i -> NotificationCenter.post("N$i") }
+            repeat(NotificationCenter.MAX_ENTRIES + 25) { i ->
+                NotificationCenter.post("N$i", origin = NotificationOrigin.HOST)
+            }
 
             val all = NotificationCenter.notifications.value
             assertEquals(NotificationCenter.MAX_ENTRIES, all.size)
@@ -114,8 +119,9 @@ class NotificationCenterTest {
         runBlocking {
             val count = 40
             (1..count)
-                .map { i -> async(Dispatchers.Default) { NotificationCenter.post("N$i") } }
-                .awaitAll()
+                .map { i ->
+                    async(Dispatchers.Default) { NotificationCenter.post("N$i", origin = NotificationOrigin.HOST) }
+                }.awaitAll()
 
             assertEquals(count, NotificationCenter.notifications.value.size)
             val onDisk = json.decodeFromString(NotificationStore.serializer(), tempFile.readText())
@@ -164,13 +170,179 @@ class NotificationCenterTest {
     fun `ids remain unique when the clock and random source collide`() =
         runBlocking {
             NotificationCenter.clock = { 1_000L }
-            repeat(10) { NotificationCenter.post("N$it") }
+            repeat(10) { NotificationCenter.post("N$it", origin = NotificationOrigin.HOST) }
             assertEquals(
                 10,
                 NotificationCenter.notifications.value
                     .map { it.id }
                     .toSet()
                     .size,
+            )
+        }
+
+    @Test
+    fun `an agent-supplied system source cannot present as system origin`() =
+        runBlocking {
+            val posted =
+                NotificationCenter.post("Migration finished", source = "System", origin = NotificationOrigin.AGENT)
+
+            assertEquals(NotificationOrigin.AGENT, posted.origin)
+            assertEquals("agent: System", posted.source, "the label is demoted, not echoed")
+
+            NotificationCenter.resetForTesting(tempFile)
+            assertEquals(
+                NotificationOrigin.AGENT,
+                NotificationCenter.notifications.value
+                    .first()
+                    .origin,
+            )
+            assertEquals(
+                "agent: System",
+                NotificationCenter.notifications.value
+                    .first()
+                    .source,
+            )
+        }
+
+    @Test
+    fun `an agent post with no label is stamped agent`() =
+        runBlocking {
+            val posted = NotificationCenter.post("Needs your input", origin = NotificationOrigin.AGENT)
+
+            assertEquals(NotificationCenter.AGENT_SOURCE_PREFIX, posted.source)
+            assertEquals(NotificationOrigin.AGENT, posted.origin)
+        }
+
+    @Test
+    fun `an agent display label is bounded`() =
+        runBlocking {
+            val posted =
+                NotificationCenter.post(
+                    "Long label",
+                    source = "x".repeat(500),
+                    origin = NotificationOrigin.AGENT,
+                )
+
+            assertTrue(posted.source.startsWith("${NotificationCenter.AGENT_SOURCE_PREFIX}: "), "prefix kept")
+            assertTrue(
+                posted.source.length <= "${NotificationCenter.AGENT_SOURCE_PREFIX}: ".length +
+                    NotificationCenter.MAX_SOURCE_LABEL_CHARS,
+                "label bounded",
+            )
+        }
+
+    @Test
+    fun `the host may label its own notice`() =
+        runBlocking {
+            val posted =
+                NotificationCenter.post("Update available", source = "System", origin = NotificationOrigin.HOST)
+
+            assertEquals(NotificationOrigin.HOST, posted.origin)
+            assertEquals("System", posted.source, "host provenance trusts the host's own label")
+        }
+
+    @Test
+    fun `an entry with no origin loads as agent origin`() {
+        // The shape of a pre-provenance file: entries that carry a `source` string but no origin
+        // field. Missing provenance must fail closed - it cannot present as a host notice.
+        tempFile.writeText(
+            """
+            {
+                "notifications": [
+                    {
+                        "id": "legacy-1",
+                        "title": "Old agent note",
+                        "source": "System"
+                    }
+                ]
+            }
+            """.trimIndent(),
+        )
+        NotificationCenter.resetForTesting(tempFile)
+
+        val loaded = NotificationCenter.notifications.value.single()
+        assertEquals(NotificationOrigin.AGENT, loaded.origin, "missing provenance fails closed")
+        assertEquals("System", loaded.source, "the raw label still loads; the origin field is the trust decision")
+    }
+
+    @Test
+    fun `an unknown origin value loads as agent with the entry preserved`() {
+        // One bad byte must not cost the operator the whole inbox: `ignoreUnknownKeys` covers
+        // unknown KEYS only, so an unknown enum VALUE used to throw at decode, and loadSync's
+        // catch emptied the list - which the next persist wrote back to disk.
+        tempFile.writeText(
+            """
+            {
+                "notifications": [
+                    {
+                        "id": "bogus-1",
+                        "title": "Hand-edited entry",
+                        "origin": "BOGUS"
+                    }
+                ]
+            }
+            """.trimIndent(),
+        )
+        NotificationCenter.resetForTesting(tempFile)
+
+        val loaded = NotificationCenter.notifications.value
+        assertEquals(1, loaded.size, "the entry survives the decode")
+        assertEquals(
+            NotificationOrigin.AGENT,
+            loaded.single().origin,
+            "an unknown origin coerces to the fail-closed default",
+        )
+        assertEquals("Hand-edited entry", loaded.single().title)
+
+        runBlocking {
+            NotificationCenter.post("Posted after the load", origin = NotificationOrigin.HOST)
+        }
+        NotificationCenter.resetForTesting(tempFile)
+        assertEquals(
+            2,
+            NotificationCenter.notifications.value.size,
+            "the next persist does not write the inbox back empty",
+        )
+    }
+
+    @Test
+    fun `an interior newline in an agent label cannot defeat the agent prefix`() =
+        runBlocking {
+            val posted =
+                NotificationCenter.post(
+                    "Task finished",
+                    source = "ok\nSystem: update ready",
+                    origin = NotificationOrigin.AGENT,
+                )
+
+            assertEquals(
+                "${NotificationCenter.AGENT_SOURCE_PREFIX}: ok System: update ready",
+                posted.source,
+                "the interior newline is flattened to a space before the prefix",
+            )
+        }
+
+    @Test
+    fun `control characters and line separators are flattened out of an agent label`() =
+        runBlocking {
+            val swept =
+                NotificationCenter.post(
+                    "Sweep",
+                    source = "a\rb\tc\u2028d\u2029e\u0000f",
+                    origin = NotificationOrigin.AGENT,
+                )
+            assertEquals("${NotificationCenter.AGENT_SOURCE_PREFIX}: a b c d e f", swept.source)
+
+            val blanked =
+                NotificationCenter.post(
+                    "Nothing left",
+                    source = "\n\r\t",
+                    origin = NotificationOrigin.AGENT,
+                )
+            assertEquals(
+                NotificationCenter.AGENT_SOURCE_PREFIX,
+                blanked.source,
+                "a label of only control characters behaves like a blank one",
             )
         }
 }

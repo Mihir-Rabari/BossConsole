@@ -1,6 +1,7 @@
 package ai.rever.boss.mcp
 
 import ai.rever.boss.notifications.NotificationCenter
+import ai.rever.boss.notifications.NotificationOrigin
 import ai.rever.boss.plugin.api.McpToolArgs
 import ai.rever.boss.plugin.api.McpToolResult
 import kotlinx.coroutines.runBlocking
@@ -93,8 +94,8 @@ class NotificationMcpToolProviderTest {
     @Test
     fun `unreadOnly filters read entries`() =
         runBlocking {
-            val posted = NotificationCenter.post("A")
-            NotificationCenter.post("B")
+            val posted = NotificationCenter.post("A", origin = NotificationOrigin.HOST)
+            NotificationCenter.post("B", origin = NotificationOrigin.HOST)
             NotificationCenter.markRead(posted.id)
 
             val unread = json(call("notifications_list", args("unreadOnly" to true)))["notifications"]!!.jsonArray
@@ -111,8 +112,8 @@ class NotificationMcpToolProviderTest {
     @Test
     fun `mark_read by id and by all`() =
         runBlocking {
-            val a = NotificationCenter.post("A")
-            NotificationCenter.post("B")
+            val a = NotificationCenter.post("A", origin = NotificationOrigin.HOST)
+            NotificationCenter.post("B", origin = NotificationOrigin.HOST)
 
             assertFalse(call("notification_mark_read", args("id" to a.id)).isError)
             assertEquals(1, NotificationCenter.unreadCount())
@@ -130,9 +131,41 @@ class NotificationMcpToolProviderTest {
     @Test
     fun `clear empties the inbox`() =
         runBlocking {
-            NotificationCenter.post("A")
+            NotificationCenter.post("A", origin = NotificationOrigin.HOST)
             val result = json(call("notifications_clear", args()))
             assertEquals(1, result["removed"]!!.jsonPrimitive.content.toInt())
             assertTrue(NotificationCenter.notifications.value.isEmpty())
+        }
+
+    @Test
+    fun `an agent-supplied system source is stamped agent, not echoed`() =
+        runBlocking {
+            val posted = json(call("notification_post", args("title" to "Task done", "source" to "System")))
+            assertEquals(
+                "AGENT",
+                posted["origin"]!!.jsonPrimitive.content,
+                "the post result carries the authoritative origin",
+            )
+            assertEquals(
+                "agent: System",
+                posted["source"]!!.jsonPrimitive.content,
+                "the agent-supplied label is demoted, never echoed as-is",
+            )
+
+            val listed = json(call("notifications_list", args()))["notifications"]!!.jsonArray
+            assertEquals(
+                "AGENT",
+                listed
+                    .first()
+                    .jsonObject["origin"]!!
+                    .jsonPrimitive.content,
+            )
+            assertEquals(
+                "agent: System",
+                listed
+                    .first()
+                    .jsonObject["source"]!!
+                    .jsonPrimitive.content,
+            )
         }
 }

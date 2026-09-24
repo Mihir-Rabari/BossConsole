@@ -3,6 +3,7 @@ package ai.rever.boss.mcp
 import ai.rever.boss.notifications.BossNotification
 import ai.rever.boss.notifications.NotificationCenter
 import ai.rever.boss.notifications.NotificationLevel
+import ai.rever.boss.notifications.NotificationOrigin
 import ai.rever.boss.plugin.api.McpToolArgs
 import ai.rever.boss.plugin.api.McpToolDefinition
 import ai.rever.boss.plugin.api.McpToolHandler
@@ -68,7 +69,7 @@ object NotificationMcpToolProvider : McpToolProvider {
                         "title": { "type": "string", "description": "Short headline" },
                         "message": { "type": "string", "description": "Optional longer body" },
                         "level": { "type": "string", "description": "INFO, SUCCESS, WARNING or ERROR" },
-                        "source": { "type": "string", "description": "Optional origin label (e.g. an agent or task name)" }
+                        "source": { "type": "string", "description": "Optional display label; stamped with agent provenance, max 80 chars" }
                     },
                     "required": ["title"]
                 }
@@ -131,12 +132,16 @@ object NotificationMcpToolProvider : McpToolProvider {
         if (title.isNullOrBlank()) {
             return McpToolResult("title is required", isError = true)
         }
+        // Everything arriving through this MCP boundary is agent-supplied by construction, so the
+        // post is stamped AGENT and the agent's `source` argument is demoted to a display label at
+        // the NotificationCenter boundary - it cannot present as a host notice (BossConsole#1587).
         val posted =
             NotificationCenter.post(
                 title = title,
                 message = args.string("message").orEmpty(),
                 level = NotificationLevel.fromString(args.string("level")),
                 source = args.string("source").orEmpty(),
+                origin = NotificationOrigin.AGENT,
             )
         return McpToolResult(entryJson(posted).toString())
     }
@@ -185,6 +190,9 @@ object NotificationMcpToolProvider : McpToolProvider {
             put("message", entry.message)
             put("level", entry.level.name)
             put("source", entry.source)
+            // Authoritative provenance, so a host notice and an agent notice stay distinguishable
+            // in the list the agent itself reads back (BossConsole#1587).
+            put("origin", entry.origin.name)
             put("createdAt", entry.createdAt)
             put("read", entry.read)
         }
