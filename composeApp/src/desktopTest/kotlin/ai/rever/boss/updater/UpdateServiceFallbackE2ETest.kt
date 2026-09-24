@@ -10,8 +10,10 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
 import java.net.InetSocketAddress
@@ -177,7 +179,8 @@ class UpdateServiceFallbackE2ETest {
         // A plain GitHub-only catalog row has no hash to describe the asset with,
         // and the body it offers feeds an elevated install. The #797-era posture
         // let it stage (and later install) with NO integrity check at all; the
-        // download now refuses bytes nobody vouched for instead.
+        // download now refuses bytes nobody vouched for instead - as its own
+        // user-facing refusal, before anything on disk is touched.
         servedBytes = goodBytes
         val version = Version.parse("9.9.11")!!
         var release: GitHubRelease? = null
@@ -185,12 +188,19 @@ class UpdateServiceFallbackE2ETest {
         val assetName = service.getExpectedAssetName(version)
         release = fallbackRelease(version, assetName, assetUrl(), goodBytes.size.toLong())
 
-        val path =
-            runBlocking {
-                service.downloadUpdate(catalogRow(version, assetName, goodBytes.size.toLong(), null)) {}
+        val refusal =
+            assertThrows<UpdateDownloadRefusedException> {
+                runBlocking {
+                    service.downloadUpdate(catalogRow(version, assetName, goodBytes.size.toLong(), null)) {}
+                }
             }
 
-        assertNull(path, "a hash-less catalog row must not stage an unverified body")
+        // The reason is user-facing: it names the missing checksum, not a
+        // generic "Failed to download update".
+        assertTrue(
+            refusal.message!!.contains("checksum"),
+            "the refusal's reason must tell the user what could not be verified: ${refusal.message}",
+        )
         assertFalse(
             File(stagingDir, assetName).exists(),
             "the hash-less body must not remain in the staging directory",

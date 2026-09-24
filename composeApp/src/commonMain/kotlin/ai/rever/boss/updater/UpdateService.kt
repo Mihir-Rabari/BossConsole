@@ -85,6 +85,22 @@ data class InstallOutcome(
 )
 
 /**
+ * The download was refused on integrity grounds — most importantly a catalog
+ * row that carries no sha256, so the bytes it offers cannot be verified before
+ * an elevated install.
+ *
+ * A refusal is an answer with a reason, not a download fault. With GitHub
+ * releases list-only, a Supabase outage or a GitHub-primary switch can
+ * otherwise offer an update that then fails as a generic "Failed to download
+ * update" that explains nothing. The message is user-facing and
+ * [UpdateManager] surfaces it verbatim — the download-side counterpart of
+ * [InstallOutcome]'s errorMessage rule.
+ */
+class UpdateDownloadRefusedException(
+    message: String,
+) : Exception(message)
+
+/**
  * Platform-specific update service interface
  */
 expect class UpdateService() {

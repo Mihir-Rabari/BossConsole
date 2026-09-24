@@ -261,6 +261,12 @@ actual class UpdateService internal constructor(
      * binding the verified checksum for the install boundary. Returns the path
      * or null.
      *
+     * A hashless row is refused BEFORE anything on disk is touched, and that
+     * refusal is an [UpdateDownloadRefusedException] with a user-facing reason
+     * rather than a null: with GitHub releases list-only, a Supabase outage or
+     * a GitHub-primary switch would otherwise offer an update that then fails
+     * as a generic "Failed to download update" that explains nothing.
+     *
      * `internal` (not private) so the fallback-checksum regression test (BossConsole#797)
      * can drive the verification path directly against a local HTTP server, instead of
      * reproducing the full primary-failure + GitHub-resolution dance.
@@ -304,6 +310,27 @@ actual class UpdateService internal constructor(
             val downloadFile = File(tempDir, assetName)
             val partFile = File(tempDir, "$assetName.part")
 
+            // A hashless catalog row is refused BEFORE anything on disk is touched:
+            // the checksum is required, so there is nothing to verify the download
+            // against and no reason to fetch it (the refusal used to land only after
+            // the whole download completed). The order matters as much as the refusal
+            // itself: this check must stay ABOVE the clean-slate deletes below, or a
+            // hashless row would destroy a good, already-verified staged update - and
+            // its checksum marker - just to reject a different body it never fetched.
+            // The refusal throws with its own user-facing reason: a hashless row
+            // otherwise surfaces downstream as a generic "Failed to download update".
+            if (sha256 == null) {
+                logger.error(
+                    LogCategory.SYSTEM,
+                    "Refusing the update download - catalog row has no checksum",
+                    mapOf("asset" to assetName),
+                )
+                throw UpdateDownloadRefusedException(
+                    "The update was not downloaded: the release catalog lists no checksum " +
+                        "for $assetName, so its integrity cannot be verified.",
+                )
+            }
+
             // Clean slate: remnants of a crashed earlier attempt (a published
             // artifact, its checksum marker, or a partial) must not be mistakable
             // for this attempt's result.
@@ -311,18 +338,6 @@ actual class UpdateService internal constructor(
             UpdateArtifactIntegrityVet.checksumSidecarOf(downloadFile).delete()
             partFile.delete()
             partial = partFile
-
-            // A hashless catalog row is refused BEFORE the bytes stream: the checksum is
-            // required, so there is nothing to verify the download against and no reason to
-            // fetch it (the refusal used to land only after the whole download completed).
-            if (sha256 == null) {
-                logger.error(
-                    LogCategory.SYSTEM,
-                    "Refusing the update download - catalog row has no checksum",
-                    mapOf("asset" to assetName),
-                )
-                return null
-            }
 
             streamToFile(url, assetSize, partFile, onProgress)
 
@@ -338,6 +353,12 @@ actual class UpdateService internal constructor(
             // update" and leaving the partial file behind.
             runCatching { partial?.delete() }
             logger.info(LogCategory.SYSTEM, "Update download cancelled", mapOf("asset" to assetName))
+            throw e
+        } catch (e: UpdateDownloadRefusedException) {
+            // A refusal is an answer with a reason the user must see - rethrow
+            // it instead of flattening it into a generic failed download. It is
+            // thrown before anything was fetched or staged, so there is no
+            // partial to clean up here.
             throw e
         } catch (e: Exception) {
             val errorMessage =
