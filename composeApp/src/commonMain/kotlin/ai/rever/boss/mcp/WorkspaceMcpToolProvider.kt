@@ -1100,11 +1100,16 @@ private data class ProjectPathCheck(
 
 private suspend fun checkProjectPath(rawPath: String): ProjectPathCheck {
     val expandedPath = expandTilde(rawPath)
-    // Same gate the boss://folder deep link runs before opening a project folder: a connected
-    // MCP client is no more trusted than a web page, so both surfaces share one definition of
-    // an acceptable project path, failing closed.
+    // Enforces system path bounds in addition to the boss://folder deep link gate: an MCP
+    // client must not open restricted operating system directories, relative paths (which
+    // would resolve against the BOSS process working directory), or paths rejected by isValidPath,
+    // making the MCP surface strictly stricter.
     val rejection =
         when {
+            CLISecurityValidator.isRestrictedSystemPath(expandedPath) -> {
+                "Refusing to open '$rawPath': target path is a restricted system directory."
+            }
+
             !File(expandedPath).isAbsolute -> {
                 "Path must be absolute (got '$rawPath'): a relative path would resolve against the " +
                     "BOSS process's working directory, not the caller's."
@@ -1124,7 +1129,15 @@ private suspend fun checkProjectPath(rawPath: String): ProjectPathCheck {
         return ProjectPathCheck(null, rejection)
     }
     val canonical = withContext(Dispatchers.IO) { canonicalizeOrNull(expandedPath) }
-    return ProjectPathCheck(canonical, "Path is not an existing directory: $rawPath".takeIf { canonical == null })
+    val isRestrictedCanonical = canonical != null && CLISecurityValidator.isRestrictedSystemPath(canonical)
+    return if (isRestrictedCanonical) {
+        ProjectPathCheck(
+            null,
+            "Refusing to open '$rawPath': canonical path '$canonical' is a restricted system directory.",
+        )
+    } else {
+        ProjectPathCheck(canonical, "Path is not an existing directory: $rawPath".takeIf { canonical == null })
+    }
 }
 
 /**
