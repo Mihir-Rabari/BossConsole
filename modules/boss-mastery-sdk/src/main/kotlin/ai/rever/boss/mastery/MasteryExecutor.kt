@@ -47,7 +47,7 @@ class MasteryExecutor(
             // so a hostile document is refused before a single capability invocation.
             val violation = structuralViolation(mastery)
             if (violation != null) {
-                send(MasteryProgress.Failed(violation, mastery.id))
+                send(MasteryProgress.Failed(violation, mastery.id, 0L))
                 return@channelFlow
             }
             val startTime = System.currentTimeMillis()
