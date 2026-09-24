@@ -977,10 +977,13 @@ publish.openapi(publishFromGitHubMetadataRoute, async (ctx) => {
       repoIsPrivate = await fetchRepoIsPrivate(parsed.owner, parsed.repo)
     } catch (e) {
       console.error('Error determining repository visibility:', e)
-      return ctx.json({
-        success: false,
-        error: 'Could not determine repository visibility'
-      }, 502)
+      // The 404 case is the curated "absent or private repo" message
+      // fetchRepoIsPrivate writes on purpose — keep it (review follow-up).
+      // Any other failure is driver/network text and keeps the fixed
+      // envelope (issue #770).
+      const error = e instanceof PublishInputError ? e.message : 'Could not determine repository visibility'
+      const status = e instanceof PublishInputError ? 400 : 502
+      return ctx.json({ success: false, error }, status)
     }
     if (repoIsPrivate) {
       return ctx.json({
@@ -1023,9 +1026,11 @@ publish.openapi(publishFromGitHubMetadataRoute, async (ctx) => {
       console.error('Error extracting manifest from JAR:', e)
       // A curated "your asset is not a JAR" / "manifest missing or invalid"
       // message is actionable for the publisher and stays; unexpected
-      // failure text does not.
+      // failure text does not — and an upstream outage is a 502, not a
+      // misleading 400 (review follow-up).
       const error = e instanceof PublishInputError ? e.message : 'Failed to extract manifest from JAR'
-      return ctx.json({ success: false, error }, 400)
+      const status = e instanceof PublishInputError ? 400 : 502
+      return ctx.json({ success: false, error }, status)
     }
 
     // Compute the authoritative SHA-256 by streaming the remote JAR. This is

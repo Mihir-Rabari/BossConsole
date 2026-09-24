@@ -263,7 +263,8 @@ export async function fetchLatestRelease(
 
   if (!response.ok) {
     if (response.status === 404) {
-      throw new Error(
+      // The publisher's release/tag is absent — curated, actionable text.
+      throw new PublishInputError(
         tag
           ? `Release tag '${tag}' not found for ${owner}/${repo}`
           : `No releases found for ${owner}/${repo}. Make sure the repository has at least one release.`
@@ -281,7 +282,13 @@ export async function fetchLatestRelease(
     // Also log server-side so the failure is visible in edge-function logs, not
     // only in the publisher's HTTP response.
     console.error(`fetchLatestRelease ${owner}/${repo}${tag ? `@${tag}` : ""} failed: ${response.status} ${response.statusText}${detail}`)
-    throw new Error(`GitHub API error: ${response.status} ${response.statusText}${detail}`)
+    // Same publisher-input rule as the ZIP layer: 401/403/406 are the
+    // publisher's to fix (token scope/SSO — the detail above is the hint),
+    // 429/5xx are GitHub being down or busy and keep the fixed envelope.
+    const input = isPublisherInputStatus(response.status)
+    throw new (input ? PublishInputError : Error)(
+      `GitHub API error: ${response.status} ${response.statusText}${detail}`
+    )
   }
 
   return await response.json()
@@ -310,7 +317,10 @@ export async function fetchRepoIsPrivate(owner: string, repo: string): Promise<b
     // inaccessible/private repo with a message that names the likely fix rather
     // than reading as a transient GitHub error.
     if (response.status === 404) {
-      throw new Error(
+      // Marked so the /github/metadata visibility catch keeps this curated
+      // message instead of clobbering it with the fixed envelope; the
+      // non-404 branch below still carries GitHub's own text and stays masked.
+      throw new PublishInputError(
         `${owner}/${repo} was not found via the GitHub API. If it is private, the store's ` +
         `GITHUB_TOKEN secret must be set and granted contents:read on it; otherwise check the URL.`
       )
@@ -354,7 +364,15 @@ export async function downloadJar(downloadUrl: string): Promise<ArrayBuffer> {
   })
 
   if (!response.ok) {
-    throw new Error(`Failed to download JAR: ${response.status} ${response.statusText}`)
+    // Same URL class as computeRemoteSha256 (the public CDN download URL), so
+    // the same rule: 4xx except 429 means the publisher's asset went missing;
+    // 429/5xx is the host and keeps the fixed envelope.
+    const input = isPublisherInputStatus(response.status)
+    throw new (input ? PublishInputError : Error)(
+      input
+        ? `JAR download URL returned HTTP ${response.status} (asset missing or renamed?)`
+        : `JAR download URL returned HTTP ${response.status}`
+    )
   }
 
   return await response.arrayBuffer()
@@ -401,14 +419,24 @@ export async function downloadReleaseAsset(asset: GitHubAsset): Promise<ArrayBuf
       headers: { "User-Agent": "BOSS-Plugin-Store/1.0" },
     })
     if (!cdn.ok) {
-      throw new Error(`Failed to download asset from CDN: ${cdn.status} ${cdn.statusText}`)
+      const input = isPublisherInputStatus(cdn.status)
+      throw new (input ? PublishInputError : Error)(
+        input
+          ? `Release asset CDN download returned HTTP ${cdn.status} (asset missing or renamed?)`
+          : `Release asset CDN download returned HTTP ${cdn.status}`
+      )
     }
     return await readBoundedArrayBuffer(cdn, "Release asset")
   }
 
   // Some deployments serve the bytes directly (200) with no redirect.
   if (!resp.ok) {
-    throw new Error(`Failed to download asset: ${resp.status} ${resp.statusText}`)
+    const input = isPublisherInputStatus(resp.status)
+    throw new (input ? PublishInputError : Error)(
+      input
+        ? `Release asset API download returned HTTP ${resp.status} (asset missing or renamed?)`
+        : `Release asset API download returned HTTP ${resp.status}`
+    )
   }
   return await readBoundedArrayBuffer(resp, "Release asset")
 }
@@ -427,11 +455,13 @@ async function readBoundedArrayBuffer(resp: Response, label: string): Promise<Ar
   // boundary is identical on both the pre-download check and this buffer guard.
   const declared = Number(resp.headers.get("content-length") || "0")
   if (Number.isFinite(declared) && declared >= LARGE_JAR_THRESHOLD) {
-    throw new Error(`${label} declares ${declared} bytes, at/over the ${LARGE_JAR_THRESHOLD}-byte cap`)
+    // The publisher's asset being too big is the same input condition
+    // computeRemoteSha256 marks (and JarTooLargeError reports at the route).
+    throw new PublishInputError(`${label} declares ${declared} bytes, at/over the ${LARGE_JAR_THRESHOLD}-byte cap`)
   }
   const buf = await resp.arrayBuffer()
   if (buf.byteLength >= LARGE_JAR_THRESHOLD) {
-    throw new Error(`${label} is ${buf.byteLength} bytes, at/over the ${LARGE_JAR_THRESHOLD}-byte cap`)
+    throw new PublishInputError(`${label} is ${buf.byteLength} bytes, at/over the ${LARGE_JAR_THRESHOLD}-byte cap`)
   }
   return buf
 }
@@ -1050,7 +1080,7 @@ export async function fetchPluginFromGitHub(githubUrl: string): Promise<GitHubPl
   // Parse GitHub URL
   const parsed = parseGitHubUrl(githubUrl)
   if (!parsed) {
-    throw new Error(
+    throw new PublishInputError(
       "Invalid GitHub URL. Expected format: https://github.com/owner/repo"
     )
   }
@@ -1061,7 +1091,7 @@ export async function fetchPluginFromGitHub(githubUrl: string): Promise<GitHubPl
   // Find JAR asset
   const jarAsset = findJarAsset(release)
   if (!jarAsset) {
-    throw new Error(
+    throw new PublishInputError(
       `No JAR file found in release ${release.tag_name}. Make sure your release includes a .jar file.`
     )
   }
