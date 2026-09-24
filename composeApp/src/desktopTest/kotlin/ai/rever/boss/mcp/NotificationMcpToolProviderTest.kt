@@ -215,6 +215,15 @@ class NotificationMcpToolProviderTest {
             assertEquals((15 downTo 6).map { "n$it" }, second, "the second page of ten, newest first")
         }
 
+    /** The clamp bounds nothing unless the page ceiling sits below what the store can hold. */
+    @Test
+    fun `the page ceiling stays below the store's size`() {
+        assertTrue(
+            NotificationMcpToolProvider.MAX_LIST_LIMIT < NotificationCenter.MAX_ENTRIES,
+            "MAX_LIST_LIMIT must stay below NotificationCenter.MAX_ENTRIES, or one call can return the whole inbox",
+        )
+    }
+
     /**
      * The ceiling is below what the store can hold, so this can fail: with the clamp removed,
      * `limit = 10000` over 150 stored entries returns 150.
@@ -251,8 +260,8 @@ class NotificationMcpToolProviderTest {
     fun `an over-long title or message is refused, names its limit, and stores nothing`() =
         runBlocking {
             listOf(
-                args("title" to "t".repeat(NotificationMcpToolProvider.MAX_TITLE_CHARS + 1)),
-                args("title" to "ok", "message" to "m".repeat(NotificationMcpToolProvider.MAX_MESSAGE_CHARS + 1)),
+                args("title" to "t".repeat(NotificationCenter.MAX_TITLE_CHARS + 1)),
+                args("title" to "ok", "message" to "m".repeat(NotificationCenter.MAX_MESSAGE_CHARS + 1)),
             ).forEach { request ->
                 val result = call("notification_post", request)
                 assertTrue(result.isError, "an over-long field must be refused")
@@ -269,8 +278,8 @@ class NotificationMcpToolProviderTest {
                 call(
                     "notification_post",
                     args(
-                        "title" to "t".repeat(NotificationMcpToolProvider.MAX_TITLE_CHARS),
-                        "message" to "m".repeat(NotificationMcpToolProvider.MAX_MESSAGE_CHARS),
+                        "title" to "t".repeat(NotificationCenter.MAX_TITLE_CHARS),
+                        "message" to "m".repeat(NotificationCenter.MAX_MESSAGE_CHARS),
                     ),
                 )
 

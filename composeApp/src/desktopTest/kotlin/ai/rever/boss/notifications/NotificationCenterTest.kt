@@ -345,4 +345,104 @@ class NotificationCenterTest {
                 "a label of only control characters behaves like a blank one",
             )
         }
+
+    // -----------------------------------------------------------------
+    // Size bounds live here, so a host publisher meets them as the MCP tool does (#1644 review).
+    // -----------------------------------------------------------------
+
+    @Test
+    fun `an over-long title from either origin, or an over-long agent message, is refused and stores nothing`(): Unit =
+        runBlocking {
+            val longTitle = "t".repeat(NotificationCenter.MAX_TITLE_CHARS + 1)
+            for (origin in NotificationOrigin.entries) {
+                assertFailsWith<IllegalArgumentException>("$origin title") {
+                    NotificationCenter.post(longTitle, origin = origin)
+                }
+            }
+            assertFailsWith<IllegalArgumentException>("agent message") {
+                val longMessage = "m".repeat(NotificationCenter.MAX_MESSAGE_CHARS + 1)
+                NotificationCenter.post("ok", message = longMessage, origin = NotificationOrigin.AGENT)
+            }
+            assertTrue(NotificationCenter.notifications.value.isEmpty(), "a refused post must store nothing")
+        }
+
+    /** A host builds its message from dynamic text; refusing would turn one problem into two. */
+    @Test
+    fun `an over-long host message is cut to the cap and ends in an ellipsis`(): Unit =
+        runBlocking {
+            val longMessage = "m".repeat(NotificationCenter.MAX_MESSAGE_CHARS + 50)
+
+            val posted = NotificationCenter.post("Build failed", longMessage, origin = NotificationOrigin.HOST)
+
+            assertEquals(NotificationCenter.MAX_MESSAGE_CHARS, posted.message.length)
+            assertTrue(posted.message.endsWith("\u2026"), "a cut message says so")
+            assertEquals(
+                posted.message,
+                NotificationCenter.notifications.value
+                    .single()
+                    .message,
+                "stored as returned",
+            )
+        }
+
+    @Test
+    fun `cutting a host message never splits a surrogate pair`(): Unit =
+        runBlocking {
+            // The emoji's high surrogate sits exactly where the cut would otherwise fall.
+            val prefix = "a".repeat(NotificationCenter.MAX_MESSAGE_CHARS - 2)
+            val message = prefix + "\uD83D\uDE00" + "tail"
+            val posted = NotificationCenter.post("x", message, origin = NotificationOrigin.HOST)
+
+            assertEquals(prefix + "\u2026", posted.message, "the whole emoji goes rather than half of it")
+        }
+
+    @Test
+    fun `fields exactly at their limits are accepted`(): Unit =
+        runBlocking {
+            val posted =
+                NotificationCenter.post(
+                    "t".repeat(NotificationCenter.MAX_TITLE_CHARS),
+                    message = "m".repeat(NotificationCenter.MAX_MESSAGE_CHARS),
+                    source = "s".repeat(NotificationCenter.MAX_SOURCE_LABEL_CHARS),
+                    origin = NotificationOrigin.HOST,
+                )
+            // Stored intact, not merely accepted: nothing at its limit is cut or marked.
+            assertEquals(NotificationCenter.MAX_TITLE_CHARS, posted.title.length)
+            assertEquals("m".repeat(NotificationCenter.MAX_MESSAGE_CHARS), posted.message)
+            assertEquals(NotificationCenter.MAX_SOURCE_LABEL_CHARS, posted.source.length)
+        }
+
+    /** The check measures what is stored, so whitespace that trim removes cannot tip a label over. */
+    @Test
+    fun `a host label at the cap once trimmed is accepted and stored trimmed`(): Unit =
+        runBlocking {
+            val label = "s".repeat(NotificationCenter.MAX_SOURCE_LABEL_CHARS)
+
+            val posted = NotificationCenter.post("x", source = "  $label  ", origin = NotificationOrigin.HOST)
+
+            assertEquals(label, posted.source)
+        }
+
+    @Test
+    fun `a host label is flattened to one line like an agent's`(): Unit =
+        runBlocking {
+            val posted = NotificationCenter.post("x", source = "Updater\nSystem", origin = NotificationOrigin.HOST)
+
+            assertEquals("Updater System", posted.source)
+        }
+
+    /** An agent's label is cut, because the agent is not ours to fix; a host label that long is a bug. */
+    @Test
+    fun `an over-long source label is refused from the host and truncated from an agent`(): Unit =
+        runBlocking {
+            val longLabel = "x".repeat(NotificationCenter.MAX_SOURCE_LABEL_CHARS + 1)
+
+            assertFailsWith<IllegalArgumentException> {
+                NotificationCenter.post("Host", source = longLabel, origin = NotificationOrigin.HOST)
+            }
+            val fromAgent = NotificationCenter.post("Agent", source = longLabel, origin = NotificationOrigin.AGENT)
+
+            val prefix = "${NotificationCenter.AGENT_SOURCE_PREFIX}: "
+            assertEquals(prefix + "x".repeat(NotificationCenter.MAX_SOURCE_LABEL_CHARS), fromAgent.source)
+        }
 }

@@ -2,6 +2,8 @@ package ai.rever.boss.mcp
 
 import ai.rever.boss.notifications.BossNotification
 import ai.rever.boss.notifications.NotificationCenter
+import ai.rever.boss.notifications.NotificationCenter.MAX_MESSAGE_CHARS
+import ai.rever.boss.notifications.NotificationCenter.MAX_TITLE_CHARS
 import ai.rever.boss.notifications.NotificationLevel
 import ai.rever.boss.notifications.NotificationOrigin
 import ai.rever.boss.plugin.api.McpToolArgs
@@ -40,12 +42,6 @@ object NotificationMcpToolProvider : McpToolProvider {
      * to the store's own size this would be a no-op, since the store never holds more.
      */
     internal const val MAX_LIST_LIMIT = 100
-
-    /** A headline, not a body. */
-    internal const val MAX_TITLE_CHARS = 200
-
-    /** About a page of text: enough for "the migration finished, here is what changed". */
-    internal const val MAX_MESSAGE_CHARS = 4_000
 
     override fun tools(): List<McpToolDefinition> =
         listOf(
@@ -134,7 +130,7 @@ object NotificationMcpToolProvider : McpToolProvider {
 
     /**
      * Paged, because this is read-only and so allowed without asking. What bounds one response:
-     * at most [MAX_LIST_LIMIT] entries, each with a title and message capped by [handlePost] and a
+     * at most [MAX_LIST_LIMIT] entries, each with a title and message capped by [NotificationCenter.post] and a
      * `source` that [NotificationCenter] reduces to an 80-character label for every post this tool
      * makes (#1619). Entries stored before those caps age out under the store's own size.
      *
@@ -168,9 +164,10 @@ object NotificationMcpToolProvider : McpToolProvider {
         if (title.isNullOrBlank()) {
             return McpToolResult("title is required", isError = true)
         }
-        // This tool is the inbox's only writer, so its fields are bounded here, refused with the
-        // limit named rather than cut. `source` is not checked here because NotificationCenter
-        // already reduces it to a bounded label for every post this tool makes (#1619).
+        // NotificationCenter.post enforces the same caps for every publisher; checking here first is
+        // what lets the refusal name the field and its limit instead of surfacing the store's
+        // exception. `source` is not checked here because NotificationCenter already reduces it to
+        // a bounded label for every post this tool makes (#1619).
         tooLong(args)?.let { return McpToolResult(it, isError = true) }
         // Everything arriving through this MCP boundary is agent-supplied by construction, so the
         // post is stamped AGENT and the agent's `source` argument is demoted to a display label at
