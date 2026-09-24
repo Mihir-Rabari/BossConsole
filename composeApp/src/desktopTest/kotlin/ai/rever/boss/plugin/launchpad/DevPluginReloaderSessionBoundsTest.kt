@@ -56,7 +56,7 @@ class DevPluginReloaderSessionBoundsTest {
     @Test
     fun `session preserved set evicts oldest paths once the cap is reached`() =
         runBlocking {
-            val pluginId = "session-bounds-plugin"
+            val pluginId = "com.rever.sessionbounds"
             val manager = createManager()
             val protectedManager = createManager()
 
@@ -97,7 +97,7 @@ class DevPluginReloaderSessionBoundsTest {
     @Test
     fun `session preserved set keeps every path from recent reloads below the cap`() =
         runBlocking {
-            val pluginId = "session-retention-plugin"
+            val pluginId = "com.rever.sessionretention"
             val manager = createManager()
             val protectedManager = createManager()
 

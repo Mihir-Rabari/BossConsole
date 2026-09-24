@@ -121,7 +121,7 @@ object DevPluginReloader {
             throw e
         }
 
-        pruneStaging(pluginId, devRoot, preservedPathsSnapshot(pluginId))
+        pruneStaging(pluginId, devRoot, preservedPathsSnapshot(sessionPreservedPaths[pluginId]))
 
         logger.info(
             LogCategory.SYSTEM,
@@ -292,16 +292,6 @@ object DevPluginReloader {
     }
 
     /**
-     * A copy of [pluginId]'s session-preserved paths taken under the set's monitor. [pruneStaging]
-     * deletes everything not exempt, so it needs a stable copy rather than a live view another
-     * caller could mutate mid-iteration.
-     */
-    private fun preservedPathsSnapshot(pluginId: String): Set<String> =
-        sessionPreservedPaths[pluginId]
-            ?.let { recorded -> synchronized(recorded) { recorded.toSet() } }
-            .orEmpty()
-
-    /**
      * Records staging JAR paths to preserve for [pluginId] across the 3-version staging
      * prune. Retention ACROSS reload attempts is deliberate and pinned by
      * DevPluginRollbackTest: a failed reload's candidate JAR must outlive later successful
@@ -360,3 +350,13 @@ private fun isLoadedOrHidden(
         installed.state == PluginState.LOADED ||
             (installed.state == PluginState.DISABLED && (!enabled || !manager.canAccess(installed.manifest)))
     )
+
+/**
+ * A copy of the session-preserved paths recorded for one plugin, taken under the set's own
+ * monitor. The reloader's prune deletes everything not exempt, so it needs a stable copy rather
+ * than a live view another caller could mutate mid-iteration.
+ */
+private fun preservedPathsSnapshot(recorded: MutableSet<String>?): Set<String> =
+    recorded
+        ?.let { set -> synchronized(set) { set.toSet() } }
+        .orEmpty()
