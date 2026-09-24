@@ -89,8 +89,12 @@ class CloneProjectDialogUrlLogTest {
                 .readText()
 
         assertTrue(
-            source.contains("mapOf(\"url\" to cloneUrlForLog(repositoryUrl), \"target\" to targetDirectory)"),
+            Regex("""mapOf\(\s*"url" to cloneUrlForLog\(repositoryUrl\)""").containsMatchIn(source),
             "the clone log call no longer puts the URL through cloneUrlForLog",
+        )
+        assertTrue(
+            Regex(""""target" to targetDirectory\.filterNot""").containsMatchIn(source),
+            "the clone log call no longer strips control characters from the target path",
         )
         assertFalse(
             Regex("""mapOf\(\s*"url" to repositoryUrl""").containsMatchIn(source),
