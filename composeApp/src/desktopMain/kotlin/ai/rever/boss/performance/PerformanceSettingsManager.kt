@@ -1,6 +1,7 @@
 package ai.rever.boss.performance
 
 import ai.rever.boss.plugin.pathutils.BossDirectories
+import ai.rever.boss.utils.atomicWriteText
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
 import kotlinx.coroutines.Dispatchers
@@ -33,7 +34,9 @@ actual object PerformanceSettingsManager {
     private val _currentSettings = MutableStateFlow(PerformanceSettings())
     actual val currentSettings: StateFlow<PerformanceSettings> = _currentSettings.asStateFlow()
 
-    // Serializes writes so two overlapping saves cannot race each other into a torn or stale file.
+    // Serializes writes so overlapping saves persist in order, freshest last. The mutex alone
+    // only orders them; atomicWriteText (temp file then atomic rename) is what makes each write
+    // crash-safe, so a reader never sees a torn file and a crash mid-write cannot truncate it.
     private val saveMutex = Mutex()
 
     init {
@@ -63,7 +66,7 @@ actual object PerformanceSettingsManager {
                 try {
                     // Encode inside the lock so the last writer persists the freshest state.
                     val content = json.encodeToString(PerformanceSettings.serializer(), _currentSettings.value)
-                    settingsFile.writeText(content)
+                    settingsFile.atomicWriteText(content)
                 } catch (e: Exception) {
                     // Settings save failed - not critical, will use in-memory settings
                     logger.warn(
