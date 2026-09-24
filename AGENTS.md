@@ -2166,7 +2166,8 @@ grant would hand an unvetted plugin the approval its sibling earned, and trustin
 meant is the fail-closed direction. Revocation stays name-wide as the operator escape hatch:
 revokeSessionTrust(toolName, providerId = null) still clears every provider's trust for that name, and
 over-removing trust fails closed. The approval dialog's “Always, for this tool” scope (Always allow / Always deny) saves
-a tool-wide rule for all agents and arguments across restarts. Saved rules can be
+a tool-wide rule for all agents and arguments across restarts (except that a saved allow does not cover a shell
+call the risk evaluator rates CRITICAL - see the destructive-shell gate under the workspace/terminal tools below). Saved rules can be
 reviewed and reset from “Tool policies” in the bottom bar's MCP access menu; a reset removes
 the rule and clears that tool's session trust, so the tool uses the configured default
 policy (ASK for known mutations in the shipped defaults). Unrelated DENYs remain intact.
@@ -2252,8 +2253,9 @@ prompt marked escalated. On an escalated prompt "Always, for this tool" is deny-
 deny this tool"): the allow button stays "Allow once" whatever scope is selected, and the registry
 applies any broader approval of an escalated call as once, logging the downgrade. A saved DENY is
 never overridden, so it is the durable answer there (#1624). Shell tools are rated on every
-string in their arguments, and arguments nested past MAX_MCP_ARGUMENT_DEPTH, or too large to scan,
-rate CRITICAL without being parsed.
+string in their arguments. Arguments nested past MAX_MCP_ARGUMENT_DEPTH rate CRITICAL without being
+parsed (every parse on the invoke path checks the same depth guard first); arguments too wide to
+scan fully rate CRITICAL on the part that was not inspected.
 
 ## Process log authority and lifetime
 

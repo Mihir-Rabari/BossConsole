@@ -13,6 +13,7 @@ import ai.rever.boss.plugin.logging.LogSanitizer
 import ai.rever.boss.plugin.pathutils.BossDirectories
 import ai.rever.boss.utils.atomicWriteText
 import ai.rever.boss.utils.logging.BossLogger
+import ai.rever.boss.utils.logging.ComponentLogger
 import ai.rever.boss.utils.logging.LogCategory
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -794,7 +795,7 @@ internal class McpToolRegistryCore(
         val tool =
             _tools.value.firstOrNull { it.definition.name == toolName }
                 ?: return McpToolResult("Unknown or disabled MCP tool: $toolName", isError = true)
-        val args = parseArgs(arguments)
+        val args = parseMcpToolArgs(arguments, logger)
         val revocation = policyEngine.revocationVersion(toolName, tool.providerId)
         // The definition's own readOnly declaration rides along on every policy consult for
         // this invocation: a tool that declared side effects classifies as mutating whatever
@@ -1296,10 +1297,31 @@ internal class McpToolRegistryCore(
     }
 
     /** Parse a JSON-object arguments string into a typed [McpToolArgs] of scalars. */
-    private fun parseArgs(arguments: String): McpToolArgs {
-        val map: Map<String, Any?> =
+}
+
+private val mcpArgsJson = Json { ignoreUnknownKeys = true }
+
+/**
+ * The [McpToolArgs] for one invocation's raw JSON [arguments]: a flat map of scalar values, or empty
+ * when the text is not a JSON object. File scope, out of [McpToolRegistryCore], which is at detekt's
+ * LargeClass ceiling.
+ *
+ * The depth guard comes first rather than being left to the catch: a StackOverflowError is only
+ * stopped by that catch because it catches Throwable (see [MAX_MCP_ARGUMENT_DEPTH]).
+ */
+// Any failure to read the arguments must mean "no arguments", never a failed invoke; this catch was
+// baselined while it lived in McpToolRegistryCore.parseArgs.
+@Suppress("TooGenericExceptionCaught")
+internal fun parseMcpToolArgs(
+    arguments: String,
+    logger: ComponentLogger,
+): McpToolArgs {
+    val map: Map<String, Any?> =
+        if (mcpJsonNestingExceeds(arguments)) {
+            emptyMap()
+        } else {
             try {
-                (json.parseToJsonElement(arguments) as? JsonObject)
+                (mcpArgsJson.parseToJsonElement(arguments) as? JsonObject)
                     ?.mapValues { (_, el) -> scalarOf(el) }
                     ?: emptyMap()
             } catch (t: Throwable) {
@@ -1310,26 +1332,26 @@ internal class McpToolRegistryCore(
                 )
                 emptyMap()
             }
-        return McpToolArgs(map, arguments.ifBlank { "{}" })
-    }
+        }
+    return McpToolArgs(map, arguments.ifBlank { "{}" })
+}
 
-    /** Convert a JSON element to a Kotlin scalar; nested objects/arrays become their raw JSON. */
-    private fun scalarOf(el: JsonElement): Any? =
-        when {
-            el is JsonNull -> {
-                null
-            }
+/** Convert a JSON element to a Kotlin scalar; nested objects/arrays become their raw JSON. */
+private fun scalarOf(el: JsonElement): Any? =
+    when {
+        el is JsonNull -> {
+            null
+        }
 
-            el is JsonPrimitive -> {
-                if (el.isString) {
-                    el.content
-                } else {
-                    el.booleanOrNull ?: el.longOrNull ?: el.doubleOrNull ?: el.content
-                }
-            }
-
-            else -> {
-                el.toString()
+        el is JsonPrimitive -> {
+            if (el.isString) {
+                el.content
+            } else {
+                el.booleanOrNull ?: el.longOrNull ?: el.doubleOrNull ?: el.content
             }
         }
-}
+
+        else -> {
+            el.toString()
+        }
+    }

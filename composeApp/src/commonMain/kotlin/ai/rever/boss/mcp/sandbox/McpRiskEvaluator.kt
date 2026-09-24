@@ -92,8 +92,8 @@ class DefaultMcpRiskEvaluator : McpRiskEvaluator {
     ): McpRiskAssessment {
         val scan = shellPayloads(args)
         return when {
-            // Past the node cap the rest of the payload was never inspected, so it cannot be
-            // vouched for: a saved Always Allow must not run it unasked.
+            // Past either cap (depth or node count) the rest of the payload was never inspected, so it
+            // cannot be vouched for: a saved Always Allow must not run it unasked.
             scan.uninspected != null -> {
                 McpRiskAssessment(
                     level = McpRiskLevel.CRITICAL,
@@ -148,14 +148,14 @@ class DefaultMcpRiskEvaluator : McpRiskEvaluator {
      * Every string value in [root], walked with an explicit stack rather than recursion: the JSON
      * is agent-controlled, and a StackOverflowError here would escape the registry's invoke before
      * its ledger record is written. Depth is already bounded by [mcpJsonNestingExceeds]; this bounds width,
-     * stopping after [MAX_ARGUMENT_NODES] nodes and reporting the scan as truncated.
+     * stopping after [MAX_ARGUMENT_NODES] nodes and reporting the rest as uninspected.
      */
     private fun stringsIn(root: JsonElement): ShellScan {
         val found = mutableListOf<String>()
         val pending = ArrayDeque<JsonElement>().apply { add(root) }
         var visited = 0
         while (pending.isNotEmpty()) {
-            if (visited++ == MAX_ARGUMENT_NODES) return ShellScan(found, TOO_LARGE)
+            if (visited++ >= MAX_ARGUMENT_NODES) return ShellScan(found, TOO_LARGE)
             when (val element = pending.removeLast()) {
                 is JsonPrimitive -> if (element.isString) found += element.content
                 is JsonArray -> pending.addAll(element)

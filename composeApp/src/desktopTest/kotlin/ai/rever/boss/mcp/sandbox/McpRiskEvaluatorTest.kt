@@ -372,7 +372,10 @@ class McpRiskEvaluatorTest {
     fun `a payload wider than the node cap is asked about, not rated on what was seen`() {
         val wide = (1..20_000).joinToString(",", prefix = "[", postfix = "]") { "\"ls\"" }
 
-        assertEquals(McpRiskLevel.CRITICAL, evaluator.evaluateRisk("send_input", McpToolArgs(emptyMap(), wide)).level)
+        val assessment = evaluator.evaluateRisk("send_input", McpToolArgs(emptyMap(), wide))
+
+        assertEquals(McpRiskLevel.CRITICAL, assessment.level)
+        assertTrue(assessment.reason.contains("too large to inspect fully"), assessment.reason)
     }
 
     // The documented fallback, pinned for real: when the raw text does not parse, the named keys
