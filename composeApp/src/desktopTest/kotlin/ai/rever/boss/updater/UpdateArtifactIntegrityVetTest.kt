@@ -48,6 +48,9 @@ class UpdateArtifactIntegrityVetTest {
     /** The bytes served for a download - tests rewrite this per case. */
     private var servedBytes: ByteArray = "legitimate installer payload".repeat(32).toByteArray()
 
+    /** Requests the local server actually served - must stay 0 for a refused download. */
+    private var requestsServed: Int = 0
+
     @BeforeEach
     fun startServer() {
         server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
@@ -79,6 +82,7 @@ class UpdateArtifactIntegrityVetTest {
     /** Serve the current [servedBytes] at /asset. */
     private fun serveAsset() {
         server.createContext("/asset") { exchange ->
+            requestsServed++
             exchange.sendResponseHeaders(200, servedBytes.size.toLong())
             exchange.responseBody.use { it.write(servedBytes) }
         }
@@ -225,12 +229,16 @@ class UpdateArtifactIntegrityVetTest {
         val service = UpdateService(GitHubUpdateSource(), stagingDir())
         val assetName = "BOSS-999.0.0-Universal.dmg"
 
-        val path =
+        // A hash-less row is refused as its own typed answer with a user-facing
+        // reason (UpdateDownloadRefusedException) instead of a null that
+        // downstream flattens into a generic "Failed to download update".
+        assertThrows<UpdateDownloadRefusedException> {
             runBlocking {
                 service.downloadFrom(url(), assetName, servedBytes.size.toLong(), null) {}
             }
+        }
 
-        assertNull(path, "a manifest that cannot describe its asset must not stage a download")
+        assertEquals(0, requestsServed, "a hash-less manifest must be refused without fetching the body")
         val staging = stagingDir()
         assertTrue(
             !File(staging, assetName).exists(),
