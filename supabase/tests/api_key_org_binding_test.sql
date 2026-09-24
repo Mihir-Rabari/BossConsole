@@ -93,7 +93,7 @@ select (select id from public.organisations where slug = 'acmeone') as acmeone,
 
 -- The keys. Deliberately mixed: NULL-bound and boss-bound must both be candidates,
 -- because the backfill produced the second and key creation produced the first.
--- key_hash/key_prefix fixtures carry the storage-form values 20260920000000
+-- key_hash/key_prefix fixtures carry the storage-form values 20260923172000
 -- constrains (64-hex digest; 16-char mask), so this suite keeps passing with the
 -- constraints in force; nothing here asserts on the specific values.
 insert into public.plugin_api_keys (user_id, name, key_prefix, key_hash, scopes, org_id) values
