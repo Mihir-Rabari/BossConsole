@@ -2246,6 +2246,15 @@ on `open_terminal` therefore runs later invocations unconfirmed, i.e. as strong 
 unconfirmed external deep link; the command still passes the shape check and the shell
 risk evaluation (HIGH, CRITICAL for destructive patterns) on every call.
 
+A saved ALLOW - "Always, for this tool", a trusted plugin or session trust - does not cover a
+shell call the evaluator rates CRITICAL: that call is asked again every time (#1577), with the
+prompt marked escalated. On an escalated prompt "Always, for this tool" is deny-only ("Always
+deny this tool"): the allow button stays "Allow once" whatever scope is selected, and the registry
+applies any broader approval of an escalated call as once, logging the downgrade. A saved DENY is
+never overridden, so it is the durable answer there (#1624). Shell tools are rated on every
+string in their arguments, and arguments nested past MAX_MCP_ARGUMENT_DEPTH, or too large to scan,
+rate CRITICAL without being parsed.
+
 ## Process log authority and lifetime
 
 Process logs are host-owned infrastructure, not an OS sandbox. Log setup fails closed

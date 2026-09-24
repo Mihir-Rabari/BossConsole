@@ -158,4 +158,75 @@ class McpDestructiveShellAllowTest {
             assertFalse(pending.await().isError)
             assertEquals(1, handlerRuns)
         }
+
+    // #1624: the prompt marks itself escalated so the dialog can offer only a one-off answer, and
+    // a broader answer that still arrives counts as once - no rule is saved that the gate would
+    // just override on the next destructive call.
+    @Test
+    fun `an escalated prompt is marked, and an Always answer to it runs once and saves nothing`() =
+        runBlocking {
+            val core = core("run_command")
+            val pending = async { core.invoke("run_command", command("rm -rf /srv/app")) }
+
+            val request = awaitPrompt()
+            assertTrue(request.escalated, "a saved ALLOW overridden for a CRITICAL call must say so")
+            approvalBus.approve(request.id, trustProvider = true)
+
+            assertFalse(pending.await().isError)
+            assertEquals(
+                McpApprovalDisposition.APPROVED_ONCE,
+                ledger.recentOperations.value
+                    .first()
+                    .approvalDisposition,
+            )
+            assertTrue(
+                policyEngine.policyFor("some_other_tool", "p1", false) != McpPolicyAction.ALLOW,
+                "an escalated prompt must not be able to trust the whole plugin",
+            )
+        }
+
+    @Test
+    fun `a prompt for a tool that was never allowed is not marked escalated`() =
+        runBlocking {
+            val core = core("run_command", allowEachTool = false)
+            val pending = async { core.invoke("run_command", command("rm -rf /srv/app")) }
+
+            val request = awaitPrompt()
+            assertFalse(request.escalated, "only a saved ALLOW that was overridden is an escalation")
+            approvalBus.deny(request.id)
+            assertTrue(pending.await().isError)
+        }
+
+    // Review on #1650: the deny half of "Always" is the durable answer that does hold on an
+    // escalated prompt - the gate only ever rewrites ALLOW - so it must still be saved.
+    @Test
+    fun `an Always deny on an escalated prompt is saved and holds for later calls`() =
+        runBlocking {
+            val core = core("run_command")
+            val pending = async { core.invoke("run_command", command("rm -rf /srv/app")) }
+
+            val request = awaitPrompt()
+            assertTrue(request.escalated)
+            approvalBus.deny(request.id, persistPolicy = true)
+            assertTrue(pending.await().isError)
+
+            // A later call - even a routine one - is refused by the saved rule, with no prompt.
+            val later = core.invoke("run_command", command("git status"))
+            assertTrue(later.isError, later.text)
+            assertTrue(approvalBus.pendingList.value.isEmpty(), "a saved deny must not ask again")
+            assertEquals(0, handlerRuns)
+        }
+
+    // Review on #1650: the ledger row is built inside invoke's finally from the sanitized
+    // arguments; a payload nested deep enough to overflow the parser must not cost the audit trail.
+    @Test
+    fun `a deeply nested payload still leaves its ledger record`() =
+        runBlocking {
+            val core = core("docker_rm")
+            val deep = "{\"a\":" + "[".repeat(8_000) + "]".repeat(8_000) + "}"
+
+            core.invoke("docker_rm", deep)
+
+            assertEquals(1L, ledger.totalCalls.value, "the call must be recorded")
+        }
 }

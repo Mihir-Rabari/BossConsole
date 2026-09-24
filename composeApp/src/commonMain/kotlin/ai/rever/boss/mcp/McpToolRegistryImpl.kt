@@ -807,7 +807,7 @@ internal class McpToolRegistryCore(
         var result: McpToolResult? = null
         var executionStarted = false
         try {
-            val authorization = authorizeInvocation(tool, args, policy, revocation)
+            val authorization = authorizeInvocation(tool, args, policy, revocation, escalated = policy != savedPolicy)
             disposition = authorization.first
             val denial = authorization.second
             result =
@@ -1032,11 +1032,40 @@ internal class McpToolRegistryCore(
             policy
         }
 
+    /**
+     * [escalated] is true when [askBeforeDestructiveShell] turned a saved ALLOW into this ASK. A
+     * rule saved from such a prompt would change nothing - the gate overrides it on the next
+     * destructive call - so an approval here always counts as once, whatever scope came back
+     * (#1624). The dialog offers only that scope; this holds the line if a caller asks for more.
+     */
+
+    /**
+     * An approval of an escalated call counts as once, whatever scope came back (#1624). The dialog
+     * never asks for more there, so a broader request came from another caller of the approval
+     * bus: it is logged, or the ledger's APPROVED_ONCE would carry no explanation.
+     */
+    private fun onceIfEscalated(
+        tool: RegisteredMcpTool,
+        decision: McpApprovalDecision.Approved,
+        escalated: Boolean,
+    ): McpApprovalDecision.Approved {
+        if (!escalated) return decision
+        if (decision.trustForSession || decision.persistPolicy || decision.trustProvider) {
+            logger.warn(
+                LogCategory.SYSTEM,
+                "Escalated MCP approval asked to be remembered; applied once only",
+                mapOf("tool" to tool.definition.name, "provider" to tool.providerId),
+            )
+        }
+        return McpApprovalDecision.Approved()
+    }
+
     private suspend fun authorizeInvocation(
         tool: RegisteredMcpTool,
         args: McpToolArgs,
         policy: McpPolicyAction,
         revocation: Long,
+        escalated: Boolean = false,
     ): Pair<McpApprovalDisposition, String?> =
         when (policy) {
             McpPolicyAction.DENY -> {
@@ -1064,10 +1093,11 @@ internal class McpToolRegistryCore(
                             declaredReadOnly = tool.definition.readOnly,
                             toolDescription = tool.definition.description,
                             policy = policy,
+                            escalated = escalated,
                         )
                 ) {
                     is McpApprovalDecision.Approved -> {
-                        approvedAuthorization(tool, decision, revocation)
+                        approvedAuthorization(tool, onceIfEscalated(tool, decision, escalated), revocation)
                     }
 
                     is McpApprovalDecision.Denied -> {

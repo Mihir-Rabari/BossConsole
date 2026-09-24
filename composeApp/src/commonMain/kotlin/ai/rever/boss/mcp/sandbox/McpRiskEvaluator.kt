@@ -1,6 +1,13 @@
 package ai.rever.boss.mcp.sandbox
 
+import ai.rever.boss.mcp.mcpJsonNestingExceeds
 import ai.rever.boss.plugin.api.McpToolArgs
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * Evaluates the risk level of an MCP tool call based on tool name and parsed arguments.
@@ -83,11 +90,18 @@ class DefaultMcpRiskEvaluator : McpRiskEvaluator {
         toolName: String,
         args: McpToolArgs,
     ): McpRiskAssessment {
-        val command = args.string("command") ?: args.string("cmd") ?: ""
-        val lowerCmd = command.lowercase().trim()
-
+        val scan = shellPayloads(args)
         return when {
-            isDestructiveShellCommand(lowerCmd) -> {
+            // Past the node cap the rest of the payload was never inspected, so it cannot be
+            // vouched for: a saved Always Allow must not run it unasked.
+            scan.uninspected != null -> {
+                McpRiskAssessment(
+                    level = McpRiskLevel.CRITICAL,
+                    reason = "Shell execution tool '$toolName' arguments are ${scan.uninspected}",
+                )
+            }
+
+            scan.payloads.any { isDestructiveShellCommand(it.lowercase().trim()) } -> {
                 McpRiskAssessment(
                     level = McpRiskLevel.CRITICAL,
                     reason = "Shell execution tool '$toolName' contains potentially destructive command pattern",
@@ -108,8 +122,64 @@ class DefaultMcpRiskEvaluator : McpRiskEvaluator {
     // matcher reads each command of a chain for the flag shapes a destructive call really takes,
     // not only the one spelling of each: `rm -fr`, `rm -r -f`, `/bin/rm -R`, `git push origin
     // main --force`, `Remove-Item -Recurse`. [cmd] arrives lowercased and trimmed.
-    private fun isDestructiveShellCommand(cmd: String): Boolean {
-        if (cmd.isEmpty()) return false
+
+    /**
+     * Every text a shell tool's call could hand a shell: `command` and `cmd`, plus every string
+     * anywhere in the raw arguments (#1624). `send_input` carries its keystrokes in `text`, and a
+     * plugin-defined shell tool may use any key, so reading only `command`/`cmd` let a destructive
+     * payload under another name rate HIGH and run under a saved "Always Allow". Rating on the most
+     * dangerous string can only err toward asking. Unparseable raw arguments fall back to the two
+     * named keys.
+     */
+    private fun shellPayloads(args: McpToolArgs): ShellScan {
+        val named = listOfNotNull(args.string("command"), args.string("cmd"))
+        // Checked before parsing: the parser itself overflows on deep nesting (see MAX_MCP_ARGUMENT_DEPTH).
+        if (mcpJsonNestingExceeds(args.raw)) return ShellScan(named, NESTED_TOO_DEEPLY)
+        val raw =
+            try {
+                stringsIn(Json.parseToJsonElement(args.raw))
+            } catch (_: SerializationException) {
+                ShellScan(emptyList(), uninspected = null)
+            }
+        return ShellScan(named + raw.payloads, raw.uninspected)
+    }
+
+    /**
+     * Every string value in [root], walked with an explicit stack rather than recursion: the JSON
+     * is agent-controlled, and a StackOverflowError here would escape the registry's invoke before
+     * its ledger record is written. Depth is already bounded by [mcpJsonNestingExceeds]; this bounds width,
+     * stopping after [MAX_ARGUMENT_NODES] nodes and reporting the scan as truncated.
+     */
+    private fun stringsIn(root: JsonElement): ShellScan {
+        val found = mutableListOf<String>()
+        val pending = ArrayDeque<JsonElement>().apply { add(root) }
+        var visited = 0
+        while (pending.isNotEmpty()) {
+            if (visited++ == MAX_ARGUMENT_NODES) return ShellScan(found, TOO_LARGE)
+            when (val element = pending.removeLast()) {
+                is JsonPrimitive -> if (element.isString) found += element.content
+                is JsonArray -> pending.addAll(element)
+                is JsonObject -> pending.addAll(element.values)
+            }
+        }
+        return ShellScan(found, uninspected = null)
+    }
+
+    /**
+     * The strings a shell call carries, and - when a cap stopped the scan - why the rest of the
+     * payload was not inspected, in words the operator sees on the prompt.
+     */
+    private class ShellScan(
+        val payloads: List<String>,
+        val uninspected: String?,
+    )
+
+    private fun isDestructiveShellCommand(raw: String): Boolean {
+        if (raw.isEmpty()) return false
+        // A line continuation (`\`, PowerShell's backtick or cmd's `^` before a newline) joins two
+        // lines into one command for the shell; join them here too, or `rm \` + newline + `-rf /srv`
+        // splits into an `rm` with no flags and a line with no `rm` (#1624).
+        val cmd = raw.replace(LINE_CONTINUATION, " ")
         val normalized = cmd.replace(WHITESPACE, " ")
         // Split the raw command, not [normalized]: collapsing whitespace first turns a newline
         // into a space, and the next command would hide inside the previous one's tokens.
@@ -164,6 +234,19 @@ class DefaultMcpRiskEvaluator : McpRiskEvaluator {
             listOf("rm -rf", "del /s", "format ", "mkfs", "git push --force", "git push -f", "dd if=", "chmod -r 777")
 
         private val WHITESPACE = Regex("""\s+""")
+
+        /**
+         * JSON nodes a shell call's arguments are scanned for before the rest is treated as
+         * uninspectable (and so CRITICAL). Real tool calls carry a handful; this only bounds a
+         * hostile payload.
+         */
+        private const val MAX_ARGUMENT_NODES = 10_000
+
+        private const val NESTED_TOO_DEEPLY = "nested too deeply to inspect"
+        private const val TOO_LARGE = "too large to inspect fully"
+
+        /** A shell line continuation: `\` (POSIX), a backtick (PowerShell) or `^` (cmd) before a newline. */
+        private val LINE_CONTINUATION = Regex("""[\\`^]\r?\n""")
 
         /** Where one command of a chain ends: `;`, `&`/`&&`, `|`/`||`, a newline, `$(` or a backtick. */
         private val COMMAND_SEPARATOR = Regex("""[;&|\n`]|\$\(""")

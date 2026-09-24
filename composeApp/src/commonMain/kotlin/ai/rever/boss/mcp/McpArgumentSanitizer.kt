@@ -46,6 +46,11 @@ object McpArgumentSanitizer {
         try {
             if (raw.length > 16_384) {
                 mapOf("arguments" to "[OMITTED: too large]")
+            } else if (mcpJsonNestingExceeds(raw)) {
+                // Before the parse, not after: the parser's own recursion overflows on deep
+                // nesting, and a StackOverflowError is not an Exception - it would escape invoke's
+                // finally and lose the ledger row this map is built for.
+                mapOf("arguments" to "[OMITTED: too deeply nested]")
             } else {
                 (Json.parseToJsonElement(raw) as? JsonObject)?.toMap()
                     ?: mapOf("arguments" to "[OMITTED: invalid JSON object]")

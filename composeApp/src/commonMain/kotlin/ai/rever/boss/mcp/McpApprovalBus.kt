@@ -72,6 +72,12 @@ data class McpApprovalRequest(
     val toolDescription: String? = null,
     /** The policy action that suspended this call - ASK today; carried so the dialog can say why. */
     val policy: McpPolicyAction? = null,
+    /**
+     * True when a saved ALLOW was overridden because this call rates CRITICAL (#1577). No saved
+     * rule can pre-approve such a call - the gate asks again every time - so the dialog offers
+     * only a one-off answer here, and the registry treats any broader approval as once (#1624).
+     */
+    val escalated: Boolean = false,
     val requestedAt: Long = System.currentTimeMillis(),
     val deferred: CompletableDeferred<McpApprovalDecision> = CompletableDeferred(),
 ) {
@@ -120,6 +126,7 @@ open class McpApprovalBus(
         declaredReadOnly: Boolean? = null,
         toolDescription: String? = null,
         policy: McpPolicyAction? = null,
+        escalated: Boolean = false,
     ): McpApprovalDecision {
         val request =
             McpApprovalRequest(
@@ -131,6 +138,7 @@ open class McpApprovalBus(
                 declaredReadOnly = declaredReadOnly,
                 toolDescription = toolDescription,
                 policy = policy,
+                escalated = escalated,
             )
 
         synchronized(lock) {
