@@ -113,14 +113,28 @@ function stubSupabase(
           }),
         }
       }
-      // plugin_versions: getLatestVersion chains select().eq().order().limit().single(),
-      // getVersion chains select().eq().eq().single().
-      const eq = () => ({
-        eq: () => ({ single: () => Promise.resolve(versionOutcome) }),
-        order: () => ({ limit: () => ({ single: () => Promise.resolve(versionOutcome) }) }),
+      // plugin_versions: getLatestVersion chains .select().eq().neq().gt().order()
+      // .limit().single() and getVersion chains .select().eq().eq().neq().gt().single()
+      // — the neq/gt pair is the #912 finalization gate on upstream/dev. Every step
+      // returns the same chain and single() resolves the version row; the stub row
+      // is a finalized version, so the passthrough chain satisfies the gate.
+      interface VersionQueryChain {
+        eq: () => VersionQueryChain
+        neq: () => VersionQueryChain
+        gt: () => VersionQueryChain
+        order: () => VersionQueryChain
+        limit: () => VersionQueryChain
+        single: () => Promise<typeof versionOutcome>
+      }
+      const chain: VersionQueryChain = {
+        eq: () => chain,
+        neq: () => chain,
+        gt: () => chain,
+        order: () => chain,
+        limit: () => chain,
         single: () => Promise.resolve(versionOutcome),
-      })
-      return { select: () => ({ eq }) }
+      }
+      return { select: () => chain }
     },
     rpc: (fn: string, args: Record<string, unknown>) => {
       if (fn === "get_plugin_for_download") {
