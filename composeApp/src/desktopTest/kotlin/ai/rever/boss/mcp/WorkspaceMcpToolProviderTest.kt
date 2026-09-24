@@ -932,10 +932,17 @@ class WorkspaceMcpToolProviderTest {
             // The manager singleton loads its list asynchronously once per process, and that
             // first load REPLACES the whole list - a registration landing before it completes
             // is swapped out (the Windows CI flake: matchExistingSpace then saw nothing for
-            // the project path and minted a fresh Space). The shipped layouts keep the loaded
-            // list non-empty, so awaiting its first non-empty value means the load has landed
-            // and the registration cannot be replaced underneath it.
-            withTimeout(5_000L) { workspaceManager.workspaces.first { it.isNotEmpty() } }
+            // the project path and minted a fresh Space). Waiting for a non-empty list is not
+            // enough: the create_workspace tests in this class register into the same
+            // singleton with no wait and JUnit method order is not fixed, so a pre-load
+            // registration can satisfy that wait while the load is still pending. Only the
+            // merged post-load list holds every shipped layout, so wait for all of them
+            // before registering.
+            withTimeout(5_000L) {
+                workspaceManager.workspaces.first { list ->
+                    PredefinedWorkspaces.allIds.all { id -> list.any { it.id == id } }
+                }
+            }
             workspaceManager.registerWorkspace(hostile)
             registeredManagerIds.add(hostile.id)
             fileManager.saveWorkspace(hostile)
@@ -979,8 +986,13 @@ class WorkspaceMcpToolProviderTest {
             // startup command: the restore path the gate must leave alone.
             val benign = savedSpaceFixture("workspace-path-benign", projectPath)
             // Same one-shot load race as the refusal test above: the first load replaces the
-            // whole list, so register only after it has landed.
-            withTimeout(5_000L) { workspaceManager.workspaces.first { it.isNotEmpty() } }
+            // whole list, so register only after the merged post-load list has landed (every
+            // shipped layout present, which a pre-load registration alone cannot satisfy).
+            withTimeout(5_000L) {
+                workspaceManager.workspaces.first { list ->
+                    PredefinedWorkspaces.allIds.all { id -> list.any { it.id == id } }
+                }
+            }
             workspaceManager.registerWorkspace(benign)
             registeredManagerIds.add(benign.id)
 
