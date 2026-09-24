@@ -224,4 +224,27 @@ class ProcessMonitorRaceTest {
             assertTrue(seen.isEmpty(), "no monitor may outlive stopSupervision: $seen")
         }
     }
+
+    // #1612: the dead handle stays registered until a replacement is spawned, and the global
+    // monitor re-attaches to any id without a live monitor - so before the fix every pass
+    // reported the same death again.
+    @Test
+    fun `a death is reported once even while the global monitor keeps passing over it`() {
+        runTest {
+            val registry = ProcessRegistry()
+            val monitor = ProcessMonitor(registry, backgroundScope)
+            val seen = mutableListOf<ProcessFailure>()
+            backgroundScope.launch { monitor.failures.collect { seen += it } }
+
+            val proc = FakeProcess(7700)
+            registry.register("svc-dead", managed("svc-dead", proc))
+            monitor.startGlobalMonitor(checkIntervalMs = 10)
+            advanceTimeBy(50) // the global monitor has attached supervision
+            proc.die(exitCode = 9)
+            advanceTimeBy(1_000) // a hundred global passes over the still-registered dead handle
+
+            assertEquals(1, seen.size, "one death must be one report: $seen")
+            monitor.stopSupervision()
+        }
+    }
 }

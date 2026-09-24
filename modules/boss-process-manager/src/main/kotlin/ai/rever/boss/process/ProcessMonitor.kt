@@ -111,6 +111,9 @@ class ProcessMonitor(
                             }
                             return@forEach
                         }
+                        // A death already reported stays in the registry until its replacement is
+                        // spawned; re-attaching would only watch the same dead handle (#1612).
+                        if (process.state.value == ProcessState.PROCESS_STATE_CRASHED) return@forEach
                         if (!monitorJobs.containsKey(process.config.processId) ||
                             monitorJobs[process.config.processId]?.isActive != true
                         ) {
@@ -123,9 +126,15 @@ class ProcessMonitor(
     }
 
     /**
-     * Stop all health supervision, leaving [scope] usable. Cancel-all and the clear are atomic
-     * against [startMonitoring], so no monitor can be registered between the two steps and
-     * outlive this shutdown untracked.
+     * Stop all health supervision, leaving [scope] usable.
+     *
+     * What is serialized against [startMonitoring] is the snapshot-and-clear of the job map: it
+     * runs under the monitor-jobs lock, so every monitor registered before it is captured and
+     * cancelled. The `cancel()` calls themselves run after the lock is released, and cancellation
+     * is cooperative, so a global-monitor pass already in flight can still register one more
+     * monitor after the clear; that monitor is tracked in the map like any other, and a later
+     * [stopMonitoring] or [stopSupervision] cancels it. (#1612: the previous wording claimed
+     * cancel-all and clear were atomic together, which they are not.)
      *
      * This is what a caller that *passed in* its own scope wants: [stopAll] cancels that scope,
      * which for `KernelBootstrap` means taking down its IPC event bridge and failure-handler
@@ -163,6 +172,10 @@ class ProcessMonitor(
 
             // Check if process is still alive
             if (!process.isAlive) {
+                // One report per death: a monitor that re-attached to an already-reported dead
+                // handle stops here instead of emitting a duplicate the kernel would act on
+                // twice - a second eviction and respawn racing the first one's replacement.
+                if (!process.claimFailureReport()) break
                 val exitCode =
                     try {
                         process.process.exitValue()
