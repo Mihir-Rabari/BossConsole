@@ -46,7 +46,10 @@ class WorkspaceReservedStoreFilesTest {
         WorkspaceMcpToolProvider.windowCreator = { "test-window-reserved-1" }
         WorkspaceMcpToolProvider.splitViewStateResolver = { null }
         WorkspaceMcpToolProvider.terminalTabOpener = null
-        WorkspaceMcpToolProvider.splitViewWaitTimeoutMs = 50L
+        // 50 ms sat on the CI flake floor: the positive control below waits for the window to
+        // register its UI state, and a loaded runner missed it. 500 ms still bounds the wait
+        // well under the 5000 ms default the refusals never reach.
+        WorkspaceMcpToolProvider.splitViewWaitTimeoutMs = 500L
     }
 
     @AfterTest
