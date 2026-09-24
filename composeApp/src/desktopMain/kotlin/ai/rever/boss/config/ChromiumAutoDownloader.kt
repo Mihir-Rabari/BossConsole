@@ -738,7 +738,9 @@ object ChromiumAutoDownloader {
      * Both paths are gated by [BoundedZipExtractor.verifyExtractableWithin] first: ditto
      * honours neither containment nor size caps of its own, so escaping entry names, symlink
      * targets and the declared central directory are all checked before it runs; the Java
-     * path re-checks containment and the written bytes while extracting.
+     * path re-checks containment and the written bytes while extracting, and the tree ditto
+     * writes is audited once more - real-path containment and the same caps - after it
+     * returns, so a refusal leaves nothing on disk to run.
      */
     private fun extractZip(
         zipPath: Path,
@@ -751,6 +753,7 @@ object ChromiumAutoDownloader {
 
         if (isMac) {
             extractWithDitto(zipPath, targetDir)
+            BoundedZipExtractor.verifyExtractedTreeWithin(targetDir)
         } else {
             extractWithJava(zipPath, targetDir)
         }

@@ -1,11 +1,15 @@
 package ai.rever.boss.utils
 
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
+import java.io.IOException
+import java.nio.file.Files
 import java.nio.file.Path
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -18,7 +22,11 @@ import kotlin.test.assertTrue
  * these tests prove the extractor itself contains whatever arrives - a `../` or absolute
  * entry name never escapes the root, a symlink entry is never materialized, and a bomb is
  * cut off at its caps rather than at the disk, whether its central directory tells the
- * truth or lies about its sizes.
+ * truth or lies about its sizes. The crafted fixtures additionally pin the parser-agreement
+ * refusals: a fake second central directory planted in an end-record comment can neither
+ * hide a symlink from the scan nor steer the scan and the reader to judge different
+ * bytes, and the tree `ditto` writes is audited for real-path containment and the same
+ * caps once it returns.
  */
 class BoundedZipExtractorTest {
     @TempDir
@@ -29,6 +37,20 @@ class BoundedZipExtractorTest {
     private val tinyLimits =
         BoundedZipExtractor.Limits(
             maxEntries = 2,
+            maxTotalUncompressedBytes = 64,
+            maxEntryUncompressedBytes = 32,
+        )
+
+    private val chainLimits =
+        BoundedZipExtractor.Limits(
+            maxEntries = 64,
+            maxTotalUncompressedBytes = 4096,
+            maxEntryUncompressedBytes = 4096,
+        )
+
+    private val auditLimits =
+        BoundedZipExtractor.Limits(
+            maxEntries = 16,
             maxTotalUncompressedBytes = 64,
             maxEntryUncompressedBytes = 32,
         )
@@ -51,6 +73,18 @@ class BoundedZipExtractorTest {
         onFile: (ZipEntry, Path) -> Unit = { _, _ -> },
     ) {
         BoundedZipExtractor.extract(zip.toPath(), extractDir.toPath(), limits, onFile)
+    }
+
+    private fun verifyMacZip(
+        zip: File,
+        limits: BoundedZipExtractor.Limits = chainLimits,
+    ) {
+        BoundedZipExtractor.verifyExtractableWithin(
+            zip.toPath(),
+            extractDir.toPath(),
+            limits,
+            allowFrameworkSymlinks = true,
+        )
     }
 
     @Test
@@ -242,5 +276,208 @@ class BoundedZipExtractorTest {
                 allowFrameworkSymlinks = true,
             )
         }
+    }
+
+    @Test
+    fun `a fake end record cannot hide a symlink entry from the scan`() {
+        val zip =
+            ZipArchiveFixtures.craftedArchive(
+                File(root, "t1.zip"),
+                listOf(
+                    ZipArchiveFixtures.Entry.symlink("Chromium Framework.framework/x", "../../outside"),
+                    ZipArchiveFixtures.Entry.file("innocent.txt", "ok"),
+                ),
+                fakeCentral = ZipArchiveFixtures.fakeCentralRecord("innocent.txt", contentSize = 2),
+                gap = 30,
+            )
+
+        assertFailsWith<SecurityException> { extract(zip) }
+
+        assertFalse(File(extractDir, "innocent.txt").exists(), "nothing from the real directory may land")
+        assertFalse(File(root, "outside").exists(), "the hidden link must not be materialized")
+    }
+
+    @Test
+    fun `extraction succeeds through the real directory when the fake record is truncated`() {
+        val zip =
+            ZipArchiveFixtures.craftedArchive(
+                File(root, "t2.zip"),
+                listOf(ZipArchiveFixtures.Entry.file("ok.txt", "ok")),
+                fakeCentral =
+                    ZipArchiveFixtures.fakeCentralRecord(
+                        "ok.txt",
+                        contentSize = 2,
+                        declaredNameLength = 100,
+                    ),
+                gap = 30,
+            )
+
+        extract(zip)
+
+        assertEquals("ok", File(extractDir, "ok.txt").readText())
+    }
+
+    @Test
+    fun `a shadow directory the zip reader accepts is refused by parser agreement`() {
+        val zip =
+            ZipArchiveFixtures.craftedArchive(
+                File(root, "t3.zip"),
+                listOf(
+                    ZipArchiveFixtures.Entry.file("a.txt", "a"),
+                    ZipArchiveFixtures.Entry.file("b.txt", "b"),
+                ),
+                fakeCentral = ZipArchiveFixtures.fakeCentralRecord("shadow.txt", contentSize = 1),
+                gap = 0,
+            )
+
+        assertFailsWith<BoundedZipExtractor.ArchiveLimitExceededException> { extract(zip) }
+
+        assertFalse(extractDir.exists(), "the refusal must happen before anything is written")
+    }
+
+    @Test
+    fun `an entry path through a framework link stays inside the root`() {
+        val zip =
+            ZipArchiveFixtures.multiEntryArchive(
+                File(root, "through.zip"),
+                listOf(
+                    ZipArchiveFixtures.Entry.symlink("Lib.framework/Versions/Current", "A"),
+                    ZipArchiveFixtures.Entry.file("Lib.framework/Versions/Current/helper.txt", "ok"),
+                ),
+            )
+
+        verifyMacZip(zip)
+    }
+
+    @Test
+    fun `a chain of framework links resolves inside the root`() {
+        val zip =
+            ZipArchiveFixtures.multiEntryArchive(
+                File(root, "chain.zip"),
+                listOf(
+                    ZipArchiveFixtures.Entry.symlink("App.framework/one", "two"),
+                    ZipArchiveFixtures.Entry.symlink("App.framework/two", "three"),
+                    ZipArchiveFixtures.Entry.symlink("App.framework/three", "real"),
+                    ZipArchiveFixtures.Entry.file("App.framework/one/file.txt", "ok"),
+                ),
+            )
+
+        verifyMacZip(zip)
+    }
+
+    @Test
+    fun `mutually linked framework entries are refused as a cycle`() {
+        val zip =
+            ZipArchiveFixtures.multiEntryArchive(
+                File(root, "cycle.zip"),
+                listOf(
+                    ZipArchiveFixtures.Entry.symlink("Loop.framework/a", "b"),
+                    ZipArchiveFixtures.Entry.symlink("Loop.framework/b", "a"),
+                ),
+            )
+
+        assertFailsWith<SecurityException> { verifyMacZip(zip) }
+    }
+
+    @Test
+    fun `a link chain past the depth guard is refused`() {
+        val links =
+            (0..41).map { index ->
+                ZipArchiveFixtures.Entry.symlink(
+                    "Deep.framework/link$index",
+                    if (index == 41) "landing" else "link${index + 1}",
+                )
+            }
+        val zip = ZipArchiveFixtures.multiEntryArchive(File(root, "deep.zip"), links)
+
+        assertFailsWith<SecurityException> { verifyMacZip(zip) }
+    }
+
+    @Test
+    fun `a symlink outside a framework bundle is refused even on the mac path`() {
+        val zip =
+            ZipArchiveFixtures.multiEntryArchive(
+                File(root, "plain.zip"),
+                listOf(
+                    ZipArchiveFixtures.Entry.symlink("plain/innocent", "target"),
+                    ZipArchiveFixtures.Entry.file("plain/target", "ok"),
+                ),
+            )
+
+        assertFailsWith<SecurityException> { verifyMacZip(zip) }
+    }
+
+    @Test
+    fun `an entry cap at the format ceiling is refused as unenforceable`() {
+        val zip = zipOf("a.txt" to "1".toByteArray())
+        val unenforceable =
+            BoundedZipExtractor.Limits(
+                maxEntries = 0xFFFF,
+                maxTotalUncompressedBytes = 64,
+                maxEntryUncompressedBytes = 32,
+            )
+
+        assertFailsWith<IllegalArgumentException> { extract(zip, unenforceable) }
+    }
+
+    @Test
+    fun `a written tree within the caps passes the audit`() {
+        extractDir.mkdirs()
+        File(extractDir, "a.txt").writeText("0123456789")
+        File(extractDir, "sub").mkdirs()
+        File(extractDir, "sub/b.txt").writeText("0123456789")
+
+        BoundedZipExtractor.verifyExtractedTreeWithin(extractDir.toPath(), auditLimits)
+
+        assertTrue(File(extractDir, "a.txt").exists(), "an accepted tree is left in place")
+    }
+
+    @Test
+    fun `a tree past the total cap is refused and deleted`() {
+        extractDir.mkdirs()
+        File(extractDir, "a.txt").writeText("0".repeat(23))
+        File(extractDir, "b.txt").writeText("0".repeat(23))
+        File(extractDir, "c.txt").writeText("0".repeat(19))
+
+        assertFailsWith<BoundedZipExtractor.ArchiveLimitExceededException> {
+            BoundedZipExtractor.verifyExtractedTreeWithin(extractDir.toPath(), auditLimits)
+        }
+
+        assertFalse(extractDir.exists(), "a refused tree must be deleted")
+    }
+
+    @Test
+    fun `a tree file past the per-entry cap is refused and deleted`() {
+        extractDir.mkdirs()
+        File(extractDir, "big.bin").writeText("0".repeat(33))
+
+        assertFailsWith<BoundedZipExtractor.ArchiveLimitExceededException> {
+            BoundedZipExtractor.verifyExtractedTreeWithin(extractDir.toPath(), auditLimits)
+        }
+
+        assertFalse(extractDir.exists(), "a refused tree must be deleted")
+    }
+
+    @Test
+    fun `a written link escaping the root is refused and deleted`() {
+        extractDir.mkdirs()
+        File(extractDir, "inside.txt").writeText("ok")
+        val escape = extractDir.toPath().resolve("escape")
+        val creationFailure: Exception? =
+            try {
+                Files.createSymbolicLink(escape, Path.of("../../outside"))
+                null
+            } catch (denied: IOException) {
+                denied
+            } catch (unsupported: UnsupportedOperationException) {
+                unsupported
+            }
+        assumeTrue(creationFailure == null, "symlink creation is not permitted on this host: $creationFailure")
+
+        assertFailsWith<SecurityException> {
+            BoundedZipExtractor.verifyExtractedTreeWithin(extractDir.toPath(), auditLimits)
+        }
+
+        assertFalse(extractDir.exists(), "a refused tree must be deleted")
     }
 }
