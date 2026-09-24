@@ -256,7 +256,9 @@ class WorkspaceManagerRaceTest {
 
             assertEquals(
                 "Kept",
-                manager.workspaces.value.single { it.id == beta.id }.name,
+                manager.workspaces.value
+                    .single { it.id == beta.id }
+                    .name,
                 "the register and the save made while the scan was reading must survive the " +
                     "publish, not be overwritten by its wholesale result",
             )

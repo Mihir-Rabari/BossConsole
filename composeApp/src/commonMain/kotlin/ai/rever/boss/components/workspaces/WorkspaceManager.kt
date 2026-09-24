@@ -400,17 +400,27 @@ class WorkspaceManager(
             // it: a save, delete or MCP register admitted while the scan was reading disk is the
             // newer decision and must survive the seed. See `mergeScanIntoCurrent`, which also
             // says what becomes of a Space deleted mid-scan.
-            mutations.withLock {
-                startupScanPublished = true
-                val deletedSinceScanStarted = idsDeletedBeforeScanPublish.toHashSet()
-                idsDeletedBeforeScanPublish.clear()
-                _workspaces.value =
-                    mergeScanIntoCurrent(
-                        _workspaces.value,
-                        mergeSavedWorkspaces(PredefinedWorkspaces.allWorkspaces, saved),
-                        deletedSinceScanStarted,
-                    )
-            }
+            publishScanIntoRegistry(saved)
+        }
+    }
+
+    /**
+     * The startup scan's publish: its answer lands under the mutation lock, merged INTO a
+     * registry that mutations may already have moved rather than written over it. See
+     * `mergeScanIntoCurrent` for what each kind of racer contributes; the publish flag and the
+     * recorded deletes it reads are the [WorkspaceManager] side of that contract.
+     */
+    private suspend fun publishScanIntoRegistry(saved: List<LayoutWorkspace>) {
+        mutations.withLock {
+            startupScanPublished = true
+            val deletedSinceScanStarted = idsDeletedBeforeScanPublish.toHashSet()
+            idsDeletedBeforeScanPublish.clear()
+            _workspaces.value =
+                mergeScanIntoCurrent(
+                    _workspaces.value,
+                    mergeSavedWorkspaces(PredefinedWorkspaces.allWorkspaces, saved),
+                    deletedSinceScanStarted,
+                )
         }
     }
 
