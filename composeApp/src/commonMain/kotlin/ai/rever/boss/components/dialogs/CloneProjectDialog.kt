@@ -489,7 +489,10 @@ private fun CloningStep(
             logger.info(
                 LogCategory.GENERAL,
                 "Starting clone operation",
-                mapOf("url" to cloneUrlForLog(repositoryUrl), "target" to targetDirectory),
+                mapOf(
+                    "url" to cloneUrlForLog(repositoryUrl),
+                    "target" to targetDirectory.filterNot { it.isLogForgingControlChar() },
+                ),
             )
 
             val result =
