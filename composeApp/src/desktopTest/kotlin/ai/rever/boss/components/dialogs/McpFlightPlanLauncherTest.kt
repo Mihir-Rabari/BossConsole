@@ -70,7 +70,12 @@ class McpFlightPlanLauncherTest {
         assertFalse(plan.plan.input.isEnabled)
         assertTrue(plan.plan.input.isPermitted)
         assertEquals(McpFlightOutcome.WITHHELD, plan.plan.outcome)
-        assertEquals(McpFlightCheckpointState.BLOCKED, plan.plan.checkpoints.first().state)
+        assertEquals(
+            McpFlightCheckpointState.BLOCKED,
+            plan.plan.checkpoints
+                .first()
+                .state,
+        )
     }
 
     @Test
