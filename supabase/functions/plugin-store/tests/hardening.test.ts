@@ -247,6 +247,27 @@ Deno.test("public catalogue and download-info routes are rate limited per client
   assertEquals(Number(downloadThrottled.headers.get("Retry-After")) > 0, true)
 })
 
+// #1628: the key used to be the LEFTMOST X-Forwarded-For entry, which is
+// whatever the caller sent. Rotating it bought a fresh bucket per request, so
+// this flood never saw a 429. The gateway appends the connection it accepted on
+// the right, and that hop is what the budget now follows.
+Deno.test("rotating the caller-written X-Forwarded-For prefix does not escape the limiter", async () => {
+  resetRateLimits()
+  const { client } = stubSupabase()
+  const app = mountApp(browse, client)
+  const from = (i: number) => ({ "x-forwarded-for": `198.18.${i >> 8}.${i & 255}, 203.0.113.9` })
+
+  for (let i = 0; i < 60; i++) {
+    assertEquals((await app.request("/list", { headers: from(i) })).status, 200)
+  }
+  const throttled = await app.request("/list", { headers: from(60) })
+  assertEquals(throttled.status, 429, "a new decoy on the left must not buy a new budget")
+
+  // Writing a victim's address on the left does not spend the victim's budget.
+  const victim = await app.request("/list", { headers: { "x-forwarded-for": "198.51.100.7" } })
+  assertEquals(victim.status, 200)
+})
+
 // ---------------------------------------------------------------------------
 // Follow-up 3: localhost joins the CORS allowlist only in local dev
 // ---------------------------------------------------------------------------
