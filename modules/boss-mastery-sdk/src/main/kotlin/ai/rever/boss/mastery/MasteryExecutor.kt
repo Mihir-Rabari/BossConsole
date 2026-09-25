@@ -423,22 +423,28 @@ class MasteryExecutor(
         nodeOutputs: Map<String, Map<String, String>>,
     ): Admission {
         val incoming = edges.filter { it.toNode == node.id }
-        // One verdict per edge: whether it may be followed given the node
-        // outputs recorded so far. A skipped source blocks its outgoing
-        // edges — its output never existed, so the guard has nothing to
-        // evaluate against.
+        // One verdict per edge occurrence: whether it may be followed given
+        // the node outputs recorded so far. Verdicts are keyed by position in
+        // a list, not by the MasteryEdge value — a data class, so keying a
+        // map on it would collapse byte-identical duplicate edges into one
+        // entry and let a node whose every incoming edge is blocked slip
+        // past the all-blocked test below. A skipped source blocks its
+        // outgoing edges — its output never existed, so the guard has
+        // nothing to evaluate against.
         val verdicts =
-            incoming.associateWith { edge ->
+            incoming.map { edge ->
                 val sourceOutput = nodeOutputs[edge.fromNode]
-                if (sourceOutput == null) {
-                    MasteryEdgeCondition.Blocked(
-                        "source node '${edge.fromNode}' produced no output (it was skipped)",
-                    )
-                } else {
-                    MasteryEdgeCondition.evaluate(edge.condition, sourceOutput)
-                }
+                val verdict =
+                    if (sourceOutput == null) {
+                        MasteryEdgeCondition.Blocked(
+                            "source node '${edge.fromNode}' produced no output (it was skipped)",
+                        )
+                    } else {
+                        MasteryEdgeCondition.evaluate(edge.condition, sourceOutput)
+                    }
+                edge to verdict
             }
-        val blocked = verdicts.values.filterIsInstance<MasteryEdgeCondition.Blocked>()
+        val blocked = verdicts.map { it.second }.filterIsInstance<MasteryEdgeCondition.Blocked>()
         // Covers a node with no incoming edges as well: nothing is blocked,
         // nothing to evaluate, admitted with the full fan-in.
         if (blocked.isEmpty()) return Admission(node, emptySet(), null)
@@ -446,9 +452,9 @@ class MasteryExecutor(
         // A source may contribute data when at least one of its edges into
         // this node is followed; otherwise its mapped output stays withheld.
         val followedSources =
-            incoming
-                .filter { verdicts[it] == MasteryEdgeCondition.Followed }
-                .map { it.fromNode }
+            verdicts
+                .filter { it.second == MasteryEdgeCondition.Followed }
+                .map { it.first.fromNode }
                 .toSet()
         val blockedSources = incoming.map { it.fromNode }.toSet() - followedSources
         val joined = blocked.joinToString("; ") { it.reason }

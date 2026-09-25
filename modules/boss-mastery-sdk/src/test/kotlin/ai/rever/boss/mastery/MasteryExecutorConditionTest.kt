@@ -397,6 +397,92 @@ class MasteryExecutorConditionTest {
             assertEquals("granted", completed.output["unlocked"])
         }
 
+    /**
+     * A pure unlock node fanned into by two references to one byte-identical
+     * blocked edge from scan, plus a downstream report node: the duplicate
+     * occurrences must not collapse into a single fan-in verdict.
+     */
+    private fun duplicateFanInMastery(edge: MasteryEdge) =
+        MasteryDefinition(
+            id = "duplicate-fan-in",
+            name = "Duplicate Fan In",
+            description = "",
+            nodes =
+                listOf(
+                    MasteryNode("scan", "plugin-a", "scan"),
+                    MasteryNode(
+                        id = "unlock",
+                        pluginId = "plugin-c",
+                        action = "unlock",
+                        inputMapping = mapOf("cleanliness" to "scan.scan_clean"),
+                        pure = true,
+                    ),
+                    MasteryNode(
+                        id = "report",
+                        pluginId = "plugin-d",
+                        action = "report",
+                        inputMapping = mapOf("state" to "unlock.unlocked"),
+                    ),
+                ),
+            edges =
+                listOf(
+                    edge,
+                    edge,
+                    MasteryEdge("unlock", "report", "unlocked", "state"),
+                ),
+        )
+
+    @Test
+    fun `duplicate byte-identical blocked edges cannot fail a pure node open`() =
+        runBlocking<Unit> {
+            // Verdicts used to be keyed on the MasteryEdge data class, so the
+            // two byte-identical occurrences collapsed into one map entry and
+            // the all-blocked test compared one blocked verdict against two
+            // occurrences — a pure node whose every incoming edge was blocked
+            // failed open and executed. Verdicts are per-occurrence now, so
+            // both block and the node is skipped like any other fan-in whose
+            // every edge blocked.
+            val resolver =
+                RecordingResolver(
+                    mapOf(
+                        "plugin-a/scan" to mapOf("scan_clean" to "false"),
+                        "plugin-c/unlock" to mapOf("unlocked" to "granted"),
+                        "plugin-d/report" to mapOf("report" to "done"),
+                    ),
+                )
+            val edge =
+                MasteryEdge(
+                    "scan",
+                    "unlock",
+                    "scan_clean",
+                    "cleanliness",
+                    "scan_clean == true",
+                )
+            val events =
+                MasteryExecutor(resolver)
+                    .execute(duplicateFanInMastery(edge), emptyMap())
+                    .toList()
+
+            // Only scan runs: every occurrence of the duplicated guard
+            // blocked, so the pure node has no followed edge to admit on, and
+            // the report node is skipped by propagation from its skipped
+            // source.
+            assertEquals(
+                listOf("scan"),
+                events.filterIsInstance<MasteryProgress.NodeStarted>().map { it.nodeId },
+            )
+            val skipped = events.filterIsInstance<MasteryProgress.NodeSkipped>()
+            assertEquals(setOf("unlock", "report"), skipped.map { it.nodeId }.toSet())
+            assertEquals(
+                "condition 'scan_clean == true' evaluated false; " +
+                    "condition 'scan_clean == true' evaluated false",
+                skipped.single { it.nodeId == "unlock" }.reason,
+            )
+            assertTrue(resolver.invocations.none { it.second == "unlock" })
+            val completed = assertIs<MasteryProgress.Completed>(events.last())
+            assertTrue(completed.output.isEmpty())
+        }
+
     @Test
     fun `a skip reason longer than 2048 characters is capped like NodeFailed error`() =
         runBlocking {
@@ -503,7 +589,9 @@ class MasteryExecutorConditionTest {
             assertEquals(listOf("delete"), skipped.map { it.nodeId })
             assertEquals(
                 "Malformed condition 'scan_clean == true && confirmed == true' (failing closed; " +
-                    "supported forms: 'true', 'false', 'key', 'key == literal', 'key != literal')",
+                    "supported forms: 'true', 'false', 'key', 'key == literal', 'key != literal'; " +
+                    "a condition key is a bare key of the source node's output map, not the " +
+                    "SOURCE_NODE.outputKey form used by inputMapping)",
                 skipped.single().reason,
             )
             val completed = assertIs<MasteryProgress.Completed>(events.last())
