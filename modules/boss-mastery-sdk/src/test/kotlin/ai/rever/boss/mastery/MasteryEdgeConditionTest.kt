@@ -140,6 +140,8 @@ class MasteryEdgeConditionTest {
                 "\"quoted\" == x",
                 "key == \"unterminated",
                 "key == x\"y",
+                "scan.scan_clean == true",
+                "scan.scan_clean",
             )
         malformed.forEach { expression ->
             val verdict = MasteryEdgeCondition.evaluate(expression, source)
@@ -163,6 +165,23 @@ class MasteryEdgeConditionTest {
     }
 
     @Test
+    fun `dotted input-mapping-style keys are malformed with the bare-key rule`() {
+        // `scan.scan_clean == true` is the form [MasteryNode.inputMapping]
+        // uses on the same edge, but a condition reads a bare output key:
+        // the dotted token parses as one key token, never matches an output
+        // key at runtime, and must be rejected up front with a reason that
+        // says so — not fail closed silently at execution time.
+        listOf("scan.scan_clean == true", "scan.scan_clean", "INPUT.flag == true").forEach { expression ->
+            val verdict = MasteryEdgeCondition.evaluate(expression, mapOf("scan_clean" to "true"))
+            assertIs<MasteryEdgeCondition.Blocked>(verdict, expression)
+            assertTrue(verdict.reason.contains("Malformed condition"), verdict.reason)
+            assertTrue(verdict.reason.contains("'$expression'"), verdict.reason)
+            assertTrue(verdict.reason.contains("bare key"), verdict.reason)
+            assertTrue(verdict.reason.contains("SOURCE_NODE.outputKey"), verdict.reason)
+        }
+    }
+
+    @Test
     fun `syntaxError accepts unconditional and well-formed conditions`() {
         assertNull(MasteryEdgeCondition.syntaxError(null))
         assertNull(MasteryEdgeCondition.syntaxError(""))
@@ -178,13 +197,20 @@ class MasteryEdgeConditionTest {
         val expression = "scan_clean == true && confirmed == true"
         assertEquals(
             "Malformed condition '$expression' (failing closed; supported forms: " +
-                "'true', 'false', 'key', 'key == literal', 'key != literal')",
+                "'true', 'false', 'key', 'key == literal', 'key != literal'; a condition key " +
+                "is a bare key of the source node's output map, not the SOURCE_NODE.outputKey " +
+                "form used by inputMapping)",
             MasteryEdgeCondition.syntaxError(expression),
         )
         assertEquals(
             "Malformed condition: longer than 256 characters (failing closed)",
             MasteryEdgeCondition.syntaxError("k".repeat(300)),
         )
+        // The dotted input-mapping form is rejected at creation time with
+        // the same reason the runtime skip would report, naming the rule.
+        val dotted = MasteryEdgeCondition.syntaxError("scan.scan_clean == true")!!
+        assertTrue(dotted.startsWith("Malformed condition 'scan.scan_clean == true'"), dotted)
+        assertTrue(dotted.contains("bare key"), dotted)
         listOf("key >", "a || b", "!key", "key == \"unterminated").forEach { expression ->
             assertTrue(MasteryEdgeCondition.syntaxError(expression)!!.startsWith("Malformed condition"))
         }

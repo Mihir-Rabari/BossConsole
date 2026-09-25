@@ -63,8 +63,12 @@ data class MasteryEdge(
      * Evaluated by [MasteryExecutor] against the source node's output map (the
      * mastery input for the virtual `INPUT` node) with the bounded grammar of
      * [MasteryEdgeCondition]: `true`, `false`, a bare `key` (truthiness), or
-     * `key == literal` / `key != literal`. A bare-key condition reading an
-     * output key literally named `true` or `false` is interpreted as the
+     * `key == literal` / `key != literal`. A condition key is a **bare** key
+     * of the source node's output map — not the `SOURCE_NODE.outputKey` form
+     * [MasteryNode.inputMapping] uses on the same edge: a dotted key is
+     * malformed, is rejected when the definition is created, and fails
+     * closed if it ever reaches the evaluator. A bare-key condition reading
+     * an output key literally named `true` or `false` is interpreted as the
      * boolean literal; the `key == "true"` comparison form is the
      * unambiguous way to compare against those strings. Null or blank
      * conditions are unconditional. A malformed expression — or one that

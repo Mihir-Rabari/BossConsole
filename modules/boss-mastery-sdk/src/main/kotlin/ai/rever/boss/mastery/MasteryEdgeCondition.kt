@@ -19,6 +19,13 @@ package ai.rever.boss.mastery
  *   double-quoted string; quotes are never part of the compared value, and
  *   the operator must be whitespace-separated from its operands.
  *
+ * A condition key is a **bare** key of the source node's output map — the
+ * `SOURCE_NODE.outputKey` form that [MasteryNode.inputMapping] uses on the
+ * very same edge is not valid here. A dotted key would tokenize as a single
+ * key token but never match an output key at runtime, so it is treated as
+ * malformed: rejected when the definition is created, and failing closed
+ * if one ever reaches the evaluator anyway.
+ *
  * A bare-key condition reading an output key literally named `true` or
  * `false` is interpreted as the boolean literal; the `key == "true"`
  * comparison form is the unambiguous way to compare against those strings.
@@ -28,7 +35,8 @@ package ai.rever.boss.mastery
  * A null or blank condition is unconditional (always followed — the
  * pre-existing behaviour). Any malformed or unsupported expression — unknown
  * operators (`&&`, `=`, `>` …), compound forms, unterminated quotes, key
- * tokens containing operator or quote characters, or expressions longer than
+ * tokens containing operator or quote characters, dotted key tokens in the
+ * `SOURCE_NODE.outputKey` form, or expressions longer than
  * [MAX_EXPRESSION_LENGTH] — fails CLOSED: it is reported as [Blocked] with a
  * human-readable reason, and [MasteryExecutor] skips the dependent node
  * instead of following the edge. Silently executing a node the author
@@ -229,13 +237,22 @@ object MasteryEdgeCondition {
         }
     }
 
-    /** Output keys are bare identifiers; operator or quote characters mark a token malformed. */
-    private fun isValidKey(token: String): Boolean = token.none { it in OPERATOR_CHARS }
+    /**
+     * Output keys are bare identifiers: operator or quote characters mark a
+     * token malformed, and so does a `.`, because a condition reads a bare
+     * key of the source node's output map. The `SOURCE_NODE.outputKey` form
+     * used by [MasteryNode.inputMapping] looks like a key but never matches
+     * one at runtime, so a dotted token is rejected up front instead of
+     * failing closed silently at execution time.
+     */
+    private fun isValidKey(token: String): Boolean = token.none { it in OPERATOR_CHARS || it == '.' }
 
     private fun malformed(expression: String): Blocked =
         Blocked(
             "Malformed condition '$expression' (failing closed; supported forms: " +
-                "'true', 'false', 'key', 'key == literal', 'key != literal')",
+                "'true', 'false', 'key', 'key == literal', 'key != literal'; a condition key " +
+                "is a bare key of the source node's output map, not the SOURCE_NODE.outputKey " +
+                "form used by inputMapping)",
         )
 
     private val oversized =

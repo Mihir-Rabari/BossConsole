@@ -158,7 +158,33 @@ class MasteryServiceConditionTest {
             assertEquals(
                 "Edge 'scan' -> 'delete' has an invalid condition: " +
                     "Malformed condition 'scan_clean == true && confirmed == true' (failing closed; " +
-                    "supported forms: 'true', 'false', 'key', 'key == literal', 'key != literal')",
+                    "supported forms: 'true', 'false', 'key', 'key == literal', 'key != literal'; " +
+                    "a condition key is a bare key of the source node's output map, not the " +
+                    "SOURCE_NODE.outputKey form used by inputMapping)",
+                error.status.description,
+            )
+        }
+
+    @Test
+    fun `createMastery rejects a dotted input-mapping-style condition key`() =
+        runBlocking<Unit> {
+            // `scan.scan_clean` is the SOURCE_NODE.outputKey form
+            // [MasteryNode.inputMapping] uses on this very edge, but a
+            // condition reads a bare output key: the dotted token would
+            // tokenize as one key and never match one at runtime, so it is
+            // rejected up front with the reason that names the rule.
+            val service = MasteryServiceImpl(MasteryExecutor(RecordingResolver(emptyMap())))
+            val error =
+                assertFailsWith<StatusRuntimeException> {
+                    service.createMastery(conditionalDefinition("scan.scan_clean == true"))
+                }
+            assertEquals(Status.INVALID_ARGUMENT.code, error.status.code)
+            assertEquals(
+                "Edge 'scan' -> 'delete' has an invalid condition: " +
+                    "Malformed condition 'scan.scan_clean == true' (failing closed; " +
+                    "supported forms: 'true', 'false', 'key', 'key == literal', 'key != literal'; " +
+                    "a condition key is a bare key of the source node's output map, not the " +
+                    "SOURCE_NODE.outputKey form used by inputMapping)",
                 error.status.description,
             )
         }
