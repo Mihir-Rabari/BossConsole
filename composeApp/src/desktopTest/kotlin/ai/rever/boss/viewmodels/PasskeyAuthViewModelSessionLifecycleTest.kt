@@ -4,11 +4,13 @@ import ai.rever.boss.services.supabase.CrossDeviceAuthenticationRequired
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -17,10 +19,11 @@ import kotlin.test.assertTrue
 
 /**
  * Adversarial lifecycle tests for the PasskeyAuthViewModel auth state machine.
- * The passkey authentication seam is a gate the test controls, so every failure
- * mode below is driven deterministically instead of by sleeps: a superseded
- * attempt completing late, a dismissal retiring the cross-device identity, and
- * an explicit cancel killing the in-flight completion path.
+ * The passkey authentication seam is a non-cancellation-cooperative gate, matching
+ * a downstream service that converts CancellationException into Result.failure.
+ * Every failure mode is therefore driven deterministically instead of by sleeps:
+ * a superseded attempt completing late, local cross-device identity retirement,
+ * and an explicit cancel killing the in-flight completion path.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class PasskeyAuthViewModelSessionLifecycleTest {
@@ -30,7 +33,7 @@ class PasskeyAuthViewModelSessionLifecycleTest {
         PasskeyAuthViewModel { _, _ ->
             val gate = CompletableDeferred<Result<Unit>>()
             pendingAttempts.addLast(gate)
-            gate.await()
+            withContext(NonCancellable) { gate.await() }
         }
 
     private fun crossDeviceRequirement() =
@@ -65,6 +68,9 @@ class PasskeyAuthViewModelSessionLifecycleTest {
                 assertEquals(0, secondSuccess)
                 assertTrue(viewModel.isLoading.value)
             } finally {
+                pendingAttempts.forEach { it.complete(Result.failure(Exception("test cleanup"))) }
+                advanceUntilIdle()
+                viewModel.dispose()
                 Dispatchers.resetMain()
             }
         }
@@ -91,6 +97,9 @@ class PasskeyAuthViewModelSessionLifecycleTest {
                 assertNull(viewModel.crossDeviceChallenge.value)
                 assertNull(viewModel.crossDeviceSessionId.value)
             } finally {
+                pendingAttempts.forEach { it.complete(Result.failure(Exception("test cleanup"))) }
+                advanceUntilIdle()
+                viewModel.dispose()
                 Dispatchers.resetMain()
             }
         }
@@ -115,6 +124,31 @@ class PasskeyAuthViewModelSessionLifecycleTest {
                 assertNull(viewModel.crossDeviceChallenge.value)
                 assertNull(viewModel.crossDeviceSessionId.value)
             } finally {
+                viewModel.dispose()
+                Dispatchers.resetMain()
+            }
+        }
+
+    @Test
+    fun `cancelling authentication retires the local cross-device identity`() =
+        runTest {
+            Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+            val viewModel = newViewModel()
+            try {
+                viewModel.authenticateWithEmailAndPasskey("user@example.com") {}
+                advanceUntilIdle()
+                pendingAttempts.removeFirst().complete(Result.failure(crossDeviceRequirement()))
+                advanceUntilIdle()
+                assertTrue(viewModel.showCrossDeviceQR.value)
+
+                viewModel.cancelAuthentication()
+
+                assertFalse(viewModel.showCrossDeviceQR.value)
+                assertNull(viewModel.crossDeviceQRUrl.value)
+                assertNull(viewModel.crossDeviceChallenge.value)
+                assertNull(viewModel.crossDeviceSessionId.value)
+            } finally {
+                viewModel.dispose()
                 Dispatchers.resetMain()
             }
         }
@@ -138,6 +172,7 @@ class PasskeyAuthViewModelSessionLifecycleTest {
                 advanceUntilIdle()
                 assertEquals(0, success)
             } finally {
+                viewModel.dispose()
                 Dispatchers.resetMain()
             }
         }
