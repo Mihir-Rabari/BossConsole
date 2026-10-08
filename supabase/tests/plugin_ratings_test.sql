@@ -1,5 +1,5 @@
 -- pgTAP tests for plugin rating submission integrity
--- (migration 20260920100000_plugin_rating_upsert_integrity).
+-- (migration 20261008100000_plugin_rating_upsert_integrity).
 -- Run with: supabase test db
 --
 -- Covers the one-row-per-user-per-plugin invariant under duplicate submit,
