@@ -28,9 +28,12 @@
 --     can only see committed rows, so the raced world (users, organisation,
 --     invites) must be committed through the dblink sessions themselves, and
 --     explicitly dismantled after finish() -- the file's own rollback cannot
---     un-commit what another backend committed. Cleanup runs unconditionally in
---     a final phase; on an assertion failure the tally records it and CI's
---     disposable DB is fresh for the next run.
+--     un-commit what another backend committed. Cleanup runs in a final
+--     phase that is reached on every path: ON_ERROR_STOP is released for
+--     this branch (psql has no try/finally, and a harness that stops on
+--     the first SQL error would otherwise exit before the teardown), the
+--     teardown is driven by the fixture constants so it works however far
+--     the file got, and the harness behaviour is restored right after it.
 --
 --   non-superuser driver (the CI harness connects as the non-superuser
 --     postgres role, and PostgreSQL only allows a SUPERUSER session to open a
@@ -53,6 +56,15 @@ begin;
 -- harness) and the single-session guard runs otherwise (the CI harness).
 select rolsuper as can_race from pg_roles where rolname = current_user \gset
 \if :can_race
+-- From here to the teardown, an unexpected SQL error must not strand the
+-- committed fixture world: keep psql running past errors so the file still
+-- reaches the teardown below (an aborted transaction is rolled back by the
+-- commit that precedes the teardown, which then runs in its own fresh
+-- transaction). A real failure still fails the run -- the tally records the
+-- failing assertion, or the ERROR lines stand in for a tally that could not
+-- be produced; this only stops psql from exiting before the world is
+-- dismantled. Restored right after the teardown.
+\set ON_ERROR_STOP off
 select plan(11);
 
 
@@ -267,24 +279,47 @@ select * from finish();
 commit;
 
 -- ---------------------------------------------------------------------------
--- Committed cleanup. The dblink sessions could only see committed state, so
--- the raced world is committed and this file's rollback cannot remove it --
--- it must be dismantled explicitly. Order matters: the organisations delete
--- cascades members/invites/redemptions/mappings, then the global roles rows
--- the org created, then the fixture users (their role grants cascade from the
--- roles delete; their membership rows already died with the organisation).
+-- Committed cleanup, reached on every path (ON_ERROR_STOP was released at
+-- the top of this branch, so a harness that stops on the first SQL error
+-- cannot exit before it). The dblink sessions could only see committed
+-- state, so the raced world is committed and this file's rollback cannot
+-- remove it -- it must be dismantled explicitly. It is driven by the
+-- fixture CONSTANTS (slug and user UUIDs), not the conc_org/conc_roles
+-- temp tables, so a failure that occurred before those tables were
+-- created still dismantles whatever had been built: an early failure
+-- leaves at most the users (no org was ever created, the derived deletes
+-- match nothing), a failure later in the file leaves the full world.
+--
+-- Order matters: the role_hierarchy rows referencing the org's roles go
+-- first, then the mapping rows and the global roles rows they hang off --
+-- one statement, because the mappings must be gone by the time the roles
+-- delete's foreign key is checked -- then the organisations row, whose
+-- delete cascades members/invites/redemptions, then the fixture users
+-- (their role grants cascaded from the roles delete; their membership
+-- rows already died with the organisation).
 -- ---------------------------------------------------------------------------
-delete from public.organisations where id = (select org_id from conc_org);
 delete from public.role_hierarchy
- where parent_role_id in (select role_id from conc_roles)
-    or child_role_id in (select role_id from conc_roles);
-delete from public.roles where id in (select role_id from conc_roles);
+ where parent_role_id in (select orl.role_id from public.organisation_roles orl
+                           where orl.org_id = (select id from public.organisations where slug = 'pgtinvconc'))
+    or child_role_id in (select orl.role_id from public.organisation_roles orl
+                           where orl.org_id = (select id from public.organisations where slug = 'pgtinvconc'));
+with doomed as (
+    delete from public.organisation_roles
+     where org_id = (select id from public.organisations where slug = 'pgtinvconc')
+    returning role_id
+)
+delete from public.roles where id in (select role_id from doomed);
+delete from public.organisations where slug = 'pgtinvconc';
 delete from auth.users where id in (
     '31000000-0000-0000-0000-000000000001',
     '31000000-0000-0000-0000-000000000002',
     '31000000-0000-0000-0000-000000000003',
     '31000000-0000-0000-0000-000000000004');
 commit;
+
+-- The harness's stop-on-error behaviour is restored for the rest of the
+-- file: the non-superuser branch below runs under it exactly as before.
+\set ON_ERROR_STOP on
 
 \else
 -- Not a superuser (the CI role): no second backend, so no two-session race --

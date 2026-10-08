@@ -32,11 +32,14 @@
 --      globally UNIQUE, so no other org can adopt it), but the row it leaves in
 --      user_roles is a standing global grant attributed to a role the org no
 --      longer controls. Degrade to the default member role, mirroring
---      organisation_invites_role_fkey's ON DELETE SET NULL, and refuse the
---      admin-kind grant outright -- the exact refusal mint already makes.
+--      organisation_invites_role_fkey's ON DELETE SET NULL -- for a stale
+--      mapping and for the admin kind alike, the GRANT is degraded, never
+--      the join: mint refuses to mint an admin-kind link at all, and
+--      consume time degrades a corrupted one to the default member role
+--      instead of granting it (the link still joins; see 4 below for why).
 --
---   3. CONSUMPTION IS A CONDITIONAL UPDATE ... RETURNING, FAIL-CLOSED ON NO
---      ROWS. The uses increment now carries its own capacity predicate
+--   3. CONSUMPTION IS A CONDITIONAL UPDATE, FAIL-CLOSED ON NO ROWS. The uses
+--      increment now carries its own capacity predicate
 --      (max_uses IS NULL OR uses < max_uses) and a no-row outcome raises,
 --      aborting the whole redemption. Under the existing FOR UPDATE this
 --      branch is unreachable -- that is the point: it is a tripwire, so a
@@ -77,7 +80,7 @@
 --   - 20260801040000_organisation_invites.sql (the functions being replaced)
 --   - 20260801010000_organisation_permissions_and_guards.sql (user_is_org_admin)
 --
--- Next migration: (none)
+-- Next migration: 20260924180000_bound_search_plugins_paging.sql
 -- ============================================================================
 
 
@@ -156,7 +159,6 @@ DECLARE
     v_slug TEXT;
     v_name TEXT;
     v_role_kind TEXT;
-    v_uses_after integer;
 BEGIN
     v_user_id := auth.uid();
     IF v_user_id IS NULL THEN
@@ -314,11 +316,18 @@ BEGIN
         UPDATE public.organisation_invites
            SET uses = uses + 1
          WHERE id = v_inv.id
-           AND (max_uses IS NULL OR uses < max_uses)
-        RETURNING uses INTO v_uses_after;
+           AND (max_uses IS NULL OR uses < max_uses);
 
         IF NOT FOUND THEN
-            RAISE EXCEPTION 'Invite link is invalid or expired';
+            -- The tripwire must be distinguishable from a client sending an
+            -- actually-invalid token -- in logs and in CI -- without adding a
+            -- second client-visible message, so it raises the SAME text under
+            -- a DISTINCT ERRCODE (55000, object_not_in_prerequisite_state:
+            -- the row is no longer in the state this consume requires). A
+            -- DETAIL would add prose to the client-visible error body; the
+            -- code alone keeps the one-generic-message property.
+            RAISE EXCEPTION 'Invite link is invalid or expired'
+                USING ERRCODE = '55000';
         END IF;
     END IF;
 
@@ -329,7 +338,7 @@ $$;
 
 ALTER FUNCTION "public"."redeem_organisation_invite"("text") OWNER TO "postgres";
 
-COMMENT ON FUNCTION "public"."redeem_organisation_invite"("text") IS 'Redeems an invite link for the CURRENT user. authenticated-only, so the desktop app is what redeems -- which is why an email scanner prefetching the invite URL cannot consume it. Re-checks at consume time everything mint checked, through the shared organisation_invite_is_live gate (also used by the preview, so the two cannot drift): revoked, expired, exhausted, and the inviter still holds admin. The stored role is re-validated against the org''s current role set: it degrades to the default member role when stale or admin-kind. All failure modes return one identical message so this is not a token oracle. The uses increment is a conditional UPDATE ... RETURNING that fails closed (transaction aborted) if capacity vanished mid-consume.';
+COMMENT ON FUNCTION "public"."redeem_organisation_invite"("text") IS 'Redeems an invite link for the CURRENT user. authenticated-only, so the desktop app is what redeems -- which is why an email scanner prefetching the invite URL cannot consume it. Re-checks at consume time everything mint checked, through the shared organisation_invite_is_live gate (also used by the preview, so the two cannot drift): revoked, expired, exhausted, and the inviter still holds admin. The stored role is re-validated against the org''s current role set: it degrades to the default member role when stale or admin-kind. All failure modes return one identical message so this is not a token oracle. The uses increment is a conditional UPDATE that fails closed (transaction aborted, ERRCODE 55000) if capacity vanished mid-consume.';
 
 
 -- get_organisation_invite_preview: the landing page's side of the SAME gate.
