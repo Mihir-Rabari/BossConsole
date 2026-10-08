@@ -39,10 +39,11 @@
 --     below drives the same state machine the races drive in parallel, in
 --     order: redeem, remove, re-click -- and holds the increment's own guard
 --     to account: the re-admit path that landed NO new redemption row must
---     burn NO second use. That is the assertion the OLD code fails (the
---     unconditional UPDATE burned a use on the re-click that inserted
---     nothing), and it needs no second backend. The branch rolls back, so no
---     cleanup is needed.
+--     burn NO second use. That guard -- the increment conditioned on the
+--     redemption insert -- is ALREADY dev's (20260801040000), so this branch
+--     is its regression net, not this PR's discriminator: it passes with
+--     or without this PR, and it needs no second backend. The branch rolls
+--     back, so no cleanup is needed.
 
 begin;
 
@@ -333,8 +334,10 @@ select is(
 -- Re-admit-after-removal, the single-session re-enactment of the state the
 -- races exercise: the member is removed, re-clicks the still-live link, and is
 -- re-admitted through the redemption row they already hold -- which inserts
--- NO new row, so the guarded increment must burn NO second use. The OLD
--- unconditional increment burned one here; this assertion fails on it.
+-- NO new row, so the guarded increment must burn NO second use. That guard
+-- is dev's already (the increment conditioned on the redemption insert,
+-- 20260801040000); this assertion pins it where the races cannot reach, and
+-- passes with or without this PR's capacity predicate.
 select set_config('request.jwt.claims', '{"role":"service_role"}', true);
 select public.remove_organisation_member(
     (select id from public.organisations where slug = 'pgtinvconc'),
