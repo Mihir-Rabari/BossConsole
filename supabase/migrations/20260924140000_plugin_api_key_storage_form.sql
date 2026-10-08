@@ -1,4 +1,4 @@
--- File: 20260923172000_plugin_api_key_storage_form.sql
+-- File: 20260924140000_plugin_api_key_storage_form.sql
 -- ============================================================================
 -- Plugin-store API keys: make the at-rest storage form of key material a
 -- database invariant

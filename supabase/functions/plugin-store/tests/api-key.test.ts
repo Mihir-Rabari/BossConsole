@@ -32,7 +32,7 @@ Deno.test("key generation covers the full charset (no folded-away indices)", () 
 })
 
 Deno.test("hashApiKey matches the database's pgcrypto digest bit for bit", async () => {
-  // 20260923172000 pins key_hash to the pgcrypto digest extensions.digest(...,
+  // 20260924140000 pins key_hash to the pgcrypto digest extensions.digest(...,
   // 'sha256') encoded as lowercase hex, and its pgTAP suite seeds rows with
   // digests computed the same way. The edge function must produce the
   // identical digest for the same presented key, or a minted key can never
