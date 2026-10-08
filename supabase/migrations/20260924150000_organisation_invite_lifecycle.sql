@@ -45,15 +45,22 @@
 --
 --   4. THE GATE IS ONE SHARED PREDICATE, NOT A LOCAL COPY. Everything above
 --      that decides "does this link still admit a NEW redeemer right now"
---      lives in public.organisation_invite_is_live, and the OTHER two
---      surfaces that answer the same question -- the landing page's
+--      lives in public.organisation_invite_is_live, and the landing page's
 --      get_organisation_invite_preview (the unauthenticated join page's
---      valid/not-valid answer) and list_organisation_invites' is_live
---      column (the admin page's live/expired pill) -- now call it too.
+--      valid/not-valid answer) calls it too, so the page can never call a
+--      link good that redemption then rejects. The admin list does NOT
+--      collapse the gate into one verdict: its is_live column keeps its
+--      ORIGINAL mint-time meaning (the expired/not-expired question the
+--      admin page's pill and Revoke button already answer), and the gate's
+--      new authority arm is exposed there as its own inviter_admin column
+--      -- a link that is dead only because the inviter lost authority
+--      shows as its own state and keeps its Revoke button, because that
+--      link re-arms.
+--
 --      A check written only in redemption drifts from a check written only
 --      in the preview: a demoted inviter's link was refused at consume time
---      while the landing page still advertised it, and the admin list still
---      showed "live". One function called from all three cannot drift.
+--      while the landing page still advertised it. One function called by
+--      both cannot drift.
 --
 --      The role re-validation is deliberately NOT in the predicate: a stale
 --      or admin-kind role degrades the GRANT at consume time, it does not
@@ -85,9 +92,10 @@
 --     never calls a link good that redemption then rejects -- the demoted
 --     inviter's link was exactly that: advertised on the page, dead at
 --     consume time;
---   - list_organisation_invites' is_live column, so the admin page's
---     live/expired pill says not-live the same hour redemption starts
---     refusing.
+--   - list_organisation_invites exposes the gate's authority arm as its own
+--     inviter_admin column, alongside the is_live column's ORIGINAL
+--     mint-time meaning -- the admin page needs the two REASONS
+--     decomposed, not the verdict collapsed (see that function below).
 --
 -- The four arms, and what each one re-checks at CONSUME time rather than
 -- trusting mint time:
@@ -131,7 +139,7 @@ $$;
 
 ALTER FUNCTION "public"."organisation_invite_is_live"("public"."organisation_invites") OWNER TO "postgres";
 
-COMMENT ON FUNCTION "public"."organisation_invite_is_live"("public"."organisation_invites") IS 'THE consume-time invite gate, shared by redemption, the landing-page preview and the admin live-list so the three cannot drift. True when the link is not revoked, not expired, under capacity, and its creator still holds admin over the org (a live re-check, not a snapshot: re-promoting the inviter re-arms their links). The stored-role re-validation is deliberately absent: a stale or admin-kind role degrades the granted role, it does not kill the link.';
+COMMENT ON FUNCTION "public"."organisation_invite_is_live"("public"."organisation_invites") IS 'THE consume-time invite gate, shared by redemption and the landing-page preview so the two cannot drift. True when the link is not revoked, not expired, under capacity, and its creator still holds admin over the org (a live re-check, not a snapshot: re-promoting the inviter re-arms their links). The stored-role re-validation is deliberately absent: a stale or admin-kind role degrades the granted role, it does not kill the link.';
 
 REVOKE EXECUTE ON FUNCTION "public"."organisation_invite_is_live"("public"."organisation_invites") FROM PUBLIC, "anon", "authenticated";
 
@@ -228,10 +236,12 @@ BEGIN
     -- re-minted; the OWNER is covered too, so an ownership handoff
     -- intentionally kills the previous owner's links).
     --
-    -- The same function gates the landing page's preview and the admin
-    -- live-list's is_live column, so this refusal and their verdicts cannot
-    -- drift. A check written only here was exactly how the demoted inviter's
-    -- link stayed "valid" on the page that redemption then rejected.
+    -- The same function gates the landing page's preview, so this refusal
+    -- and the page's verdict cannot drift. A check written only here was
+    -- exactly how the demoted inviter's link stayed "valid" on the page
+    -- that redemption then rejected. The admin live-list decomposes the
+    -- same gate into its two arms instead of collapsing it -- see
+    -- list_organisation_invites below.
     --
     -- Same message as "not found" on every arm. Any distinction -- "revoked",
     -- "the inviter lost admin" -- would confirm a token existed, and the
@@ -319,7 +329,7 @@ $$;
 
 ALTER FUNCTION "public"."redeem_organisation_invite"("text") OWNER TO "postgres";
 
-COMMENT ON FUNCTION "public"."redeem_organisation_invite"("text") IS 'Redeems an invite link for the CURRENT user. authenticated-only, so the desktop app is what redeems -- which is why an email scanner prefetching the invite URL cannot consume it. Re-checks at consume time everything mint checked, through the shared organisation_invite_is_live gate (also used by the preview and the admin live-list, so the three cannot drift): revoked, expired, exhausted, and the inviter still holds admin. The stored role is re-validated against the org''s current role set: it degrades to the default member role when stale or admin-kind. All failure modes return one identical message so this is not a token oracle. The uses increment is a conditional UPDATE ... RETURNING that fails closed (transaction aborted) if capacity vanished mid-consume.';
+COMMENT ON FUNCTION "public"."redeem_organisation_invite"("text") IS 'Redeems an invite link for the CURRENT user. authenticated-only, so the desktop app is what redeems -- which is why an email scanner prefetching the invite URL cannot consume it. Re-checks at consume time everything mint checked, through the shared organisation_invite_is_live gate (also used by the preview, so the two cannot drift): revoked, expired, exhausted, and the inviter still holds admin. The stored role is re-validated against the org''s current role set: it degrades to the default member role when stale or admin-kind. All failure modes return one identical message so this is not a token oracle. The uses increment is a conditional UPDATE ... RETURNING that fails closed (transaction aborted) if capacity vanished mid-consume.';
 
 
 -- get_organisation_invite_preview: the landing page's side of the SAME gate.
@@ -329,8 +339,8 @@ COMMENT ON FUNCTION "public"."redeem_organisation_invite"("text") IS 'Redeems an
 -- it called a link good that redemption then refused: exactly the demoted
 -- inviter's link, advertised on the page the same day consume-time rejection
 -- began. The gate is now organisation_invite_is_live, called by redemption
--- and the admin live-list too, so the page's "valid" and redemption's answer
--- cannot drift apart again.
+-- too, so the page's "valid" and redemption's answer cannot drift apart
+-- again.
 --
 -- Unchanged in every other property: display-only, NEVER redeems and never
 -- consumes a use (a link prefetch is harmless), service_role only, and one
@@ -372,18 +382,27 @@ $$;
 
 ALTER FUNCTION "public"."get_organisation_invite_preview"("text") OWNER TO "postgres";
 
-COMMENT ON FUNCTION "public"."get_organisation_invite_preview"("text") IS 'Display-only preview of an invite for the unauthenticated web landing page. NEVER redeems and never consumes a use, so a link prefetch is harmless. Gated by the shared organisation_invite_is_live predicate -- the same gate redemption and the admin live-list apply -- so the page never calls a link good that redemption then rejects. Returns { valid: false } identically for unknown, expired, revoked, exhausted and inviter-no-longer-admin tokens.';
+COMMENT ON FUNCTION "public"."get_organisation_invite_preview"("text") IS 'Display-only preview of an invite for the unauthenticated web landing page. NEVER redeems and never consumes a use, so a link prefetch is harmless. Gated by the shared organisation_invite_is_live predicate -- the same gate redemption applies -- so the page never calls a link good that redemption then rejects. Returns { valid: false } identically for unknown, expired, revoked, exhausted and inviter-no-longer-admin tokens.';
 
 
--- list_organisation_invites: the admin page's live/expired pill, on the SAME
--- gate.
+-- list_organisation_invites: the admin page's invite table, DECOMPOSING the
+-- same gate.
 --
--- is_live used to be computed here from the mint-time arms alone, so a
--- demoted inviter's link still showed "live" in the invite table while
--- redemption refused it -- the admin sees the pill, acts on nothing, and the
--- link keeps dead-ending every recipient it is sent to. The pill now reads
--- the shared organisation_invite_is_live predicate, so the table, the
--- landing page and redemption answer as one.
+-- The gate's authority arm must reach the admin page, but it must not ride
+-- the is_live column: supabase/functions/organisation/views/admin.ts reads
+-- is_live as expired/not-expired TWICE -- the status pill, and whether the
+-- Revoke button renders at all -- so folding the authority arm in made an
+-- authority-lost link read "expired" and lose its Revoke button, even
+-- though that link re-arms the moment the inviter is re-promoted: exactly
+-- the link an admin still wants to be able to kill.
+--
+-- is_live therefore keeps its ORIGINAL mint-time meaning (not revoked, not
+-- expired, under capacity), and the authority arm is exposed as its own
+-- inviter_admin column: the same live user_is_org_admin re-check the shared
+-- gate applies at consume time. The page can then show the two truths
+-- separately -- a link that is live but inviter-less says so as its own
+-- state and keeps its Revoke button; the pill reads "live" only when both
+-- columns are true.
 --
 -- Projection and authorization unchanged: token_hash stays absent (a client
 -- that could read the hash could confirm a guessed token offline),
@@ -419,7 +438,10 @@ BEGIN
                i.role_id, r.name AS role_name,
                i.max_uses, i.uses, i.expires_at, i.revoked_at, i.created_at,
                cu.email AS created_by_email,
-               public.organisation_invite_is_live(i) AS is_live
+               (i.revoked_at IS NULL
+                AND i.expires_at > now()
+                AND (i.max_uses IS NULL OR i.uses < i.max_uses)) AS is_live,
+               public.user_is_org_admin(i.created_by, i.org_id) AS inviter_admin
         FROM public.organisation_invites i
         LEFT JOIN public.roles r ON r.id = i.role_id
         LEFT JOIN auth.users cu ON cu.id = i.created_by
@@ -433,7 +455,7 @@ $$;
 
 ALTER FUNCTION "public"."list_organisation_invites"("uuid", "uuid") OWNER TO "postgres";
 
-COMMENT ON FUNCTION "public"."list_organisation_invites"("uuid", "uuid") IS 'Invite links for an organisation, masked: token_prefix only, never token_hash. Organisation admins only. is_live reads the shared organisation_invite_is_live gate -- the same predicate redemption and the preview apply -- so the admin table and the consume-time answer cannot drift.';
+COMMENT ON FUNCTION "public"."list_organisation_invites"("uuid", "uuid") IS 'Invite links for an organisation, masked: token_prefix only, never token_hash. Organisation admins only. is_live keeps its original mint-time meaning (not revoked, not expired, under capacity); the consume-time authority re-check is exposed as its own inviter_admin column, so the admin page distinguishes an authority-lost link that can re-arm from an expired one.';
 
 
 -- ============================================================================

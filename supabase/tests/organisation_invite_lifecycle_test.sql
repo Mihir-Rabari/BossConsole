@@ -13,15 +13,16 @@
 -- role set (mapping deleted post-mint degrades to the default member role, a
 -- corrupted admin-kind role_id is refused at consume time), the idempotency
 -- ordering surviving the new checks, the enumeration-oracle property, and
--- the OTHER two surfaces that answer the same question -- the landing page's
--- preview and the admin live-list -- agreeing with redemption through the
--- shared organisation_invite_is_live gate.
+-- the OTHER two surfaces: the landing page's preview agreeing with
+-- redemption through the shared organisation_invite_is_live gate, and the
+-- admin live-list decomposing that gate into is_live (its original
+-- mint-time meaning) and inviter_admin (the authority re-check).
 --
 -- The two-session concurrent-accept race is in
 -- organisation_invite_concurrency_test.sql.
 
 begin;
-select plan(32);
+select plan(35);
 
 -- ---------------------------------------------------------------------------
 -- Fixtures: an organisation, its owner, one admin-by-role (the inviter), and
@@ -360,12 +361,17 @@ select is(
 );
 
 -- ===========================================================================
--- SECTION 5: the SAME gate on every surface. The landing page's preview and
--- the admin live-list answer "does this link still admit?" with the same
--- shared predicate redemption refuses by -- organisation_invite_is_live --
--- so a demoted inviter's link stops being advertised the same hour it starts
--- being refused, and a link redemption still ADMITS (a drifted role
--- degrades the grant, it does not kill the join) stays valid on the page.
+-- SECTION 5: the SAME gate on every surface. The landing page's preview
+-- answers "does this link still admit?" with the shared predicate redemption
+-- refuses by -- organisation_invite_is_live -- so a demoted inviter's link
+-- stops being advertised the same hour it starts being refused, and a link
+-- redemption still ADMITS (a drifted role degrades the grant, it does not
+-- kill the join) stays valid on the page. The admin live-list DECOMPOSES the
+-- gate instead of collapsing it: is_live keeps its original
+-- expired/not-expired meaning, and the authority re-check rides its own
+-- inviter_admin column -- so an authority-lost link does NOT read as
+-- expired, shows its own state, and keeps its Revoke button, because it can
+-- re-arm.
 -- ===========================================================================
 -- Re-establish the inviter as an admin-by-role: section 1 removed them, and
 -- the surfaces need a mint whose authority can be WITHDRAWN live.
@@ -403,10 +409,23 @@ select is(
     true,
     'control: the admin live-list shows the admin inviter''s link as live'
 );
+select is(
+    (select (value ->> 'inviter_admin')::boolean
+       from jsonb_array_elements(
+            (select public.list_organisation_invites(
+                (select id from public.organisations where slug='pgtinvlife'),
+                '22000000-0000-0000-0000-000000000001') -> 'data')) as value
+      where value ->> 'label' = 'preview-me'),
+    true,
+    'control: the inviter still holds admin -- the authority column is exposed separately'
+);
 
 -- Demote the inviter: redemption refuses (section 1), and the two display
 -- surfaces must say so too -- the page must not advertise a dead link, and
--- the admin pill must not show "live" for one.
+-- the admin pill must not show "live" for one. The list does NOT read the
+-- link as expired: is_live stays true (not revoked, not expired, under
+-- capacity -- the link can re-arm), and the authority re-check flips its
+-- own column.
 delete from public.user_roles
 where user_id = '22000000-0000-0000-0000-000000000002'
   and role_id in (select orl.role_id from public.organisation_roles orl
@@ -425,8 +444,18 @@ select is(
                 (select id from public.organisations where slug='pgtinvlife'),
                 '22000000-0000-0000-0000-000000000001') -> 'data')) as value
       where value ->> 'label' = 'preview-me'),
+    true,
+    'the demoted inviter''s link stays not-expired -- is_live no longer folds in authority'
+);
+select is(
+    (select (value ->> 'inviter_admin')::boolean
+       from jsonb_array_elements(
+            (select public.list_organisation_invites(
+                (select id from public.organisations where slug='pgtinvlife'),
+                '22000000-0000-0000-0000-000000000001') -> 'data')) as value
+      where value ->> 'label' = 'preview-me'),
     false,
-    'the admin live-list flips the demoted inviter''s link to not-live'
+    'the authority re-check flips its own column -- the pill reads "inviter lost admin", not "expired"'
 );
 
 -- Re-promote: the shared predicate is LIVE, so both surfaces re-arm the same
@@ -451,7 +480,17 @@ select is(
                 '22000000-0000-0000-0000-000000000001') -> 'data')) as value
       where value ->> 'label' = 'preview-me'),
     true,
-    're-promoting the inviter re-arms the link in the LIST too'
+    'is_live reads true throughout -- the re-arm never read as expiry'
+);
+select is(
+    (select (value ->> 'inviter_admin')::boolean
+       from jsonb_array_elements(
+            (select public.list_organisation_invites(
+                (select id from public.organisations where slug='pgtinvlife'),
+                '22000000-0000-0000-0000-000000000001') -> 'data')) as value
+      where value ->> 'label' = 'preview-me'),
+    true,
+    're-promoting the inviter re-arms the link in the LIST too -- inviter_admin is live, not a flag'
 );
 
 -- The role re-validation is NOT in the shared predicate, on purpose: sections
