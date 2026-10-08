@@ -7,7 +7,10 @@
 -- key_prefix were bare TEXT, and users hold direct INSERT/UPDATE RLS grants
 -- on their own rows. The migration adds CHECK constraints (64-hex digest in
 -- key_hash, 16-char mask in key_prefix) and an idempotent in-place repair
--- for legacy rows.
+-- for legacy rows, and writes one plugin_api_key_logs row per repaired key
+-- (action 'storage_form_repair') so its owner can see the repair - and the
+-- exposure, for rows whose plaintext rested in key_hash - instead of
+-- watching the key silently vanish. Section E pins the audit rows.
 --
 -- These call the REAL repair function and the REAL validate RPC, not copies
 -- of their bodies, and exercise the constraints through the same direct
@@ -17,7 +20,7 @@
 -- database the column exists and this is a no-op.
 
 begin;
-select plan(22);
+select plan(28);
 
 -- Fixture: live-DB drift shim (no-op on a fresh database).
 
@@ -264,6 +267,65 @@ select is(
     'scrubbing the prefix does not break the key: it still validates via its digest'
 );
 
+-- ===========================================================================
+-- E. The repair leaves an audit trail the owner can read: one
+--    plugin_api_key_logs row per repaired key (action 'storage_form_repair'),
+--    not a vanished key and a count-only NOTICE.
+-- ===========================================================================
+
+select is(
+    (select count(*) from public.plugin_api_key_logs
+     where action = 'storage_form_repair'
+       and api_key_id in ('d0000000-0000-4000-8000-00000000000b',
+                          'd0000000-0000-4000-8000-00000000000c',
+                          'd0000000-0000-4000-8000-00000000000d',
+                          'd0000000-0000-4000-8000-00000000000e')),
+    4::bigint,
+    'one storage_form_repair row is written per repaired key (the both-arms row logged exactly once)'
+);
+
+select is(
+    (select bool_and(success) from public.plugin_api_key_logs
+     where action = 'storage_form_repair'
+       and api_key_id in ('d0000000-0000-4000-8000-00000000000b',
+                          'd0000000-0000-4000-8000-00000000000c',
+                          'd0000000-0000-4000-8000-00000000000d',
+                          'd0000000-0000-4000-8000-00000000000e')),
+    true,
+    'each repair row records a completed repair (success)'
+);
+
+select ok(
+    exists (
+        select 1 from public.plugin_api_key_logs
+         where api_key_id = 'd0000000-0000-4000-8000-00000000000b'
+           and action = 'storage_form_repair'
+           and error_message like '%exposed%'
+    ),
+    'the row whose key_hash held the raw key says the material was exposed (and revoked)'
+);
+
+select ok(
+    exists (
+        select 1 from public.plugin_api_key_logs
+         where api_key_id = 'd0000000-0000-4000-8000-00000000000e'
+           and action = 'storage_form_repair'
+           and error_message like '%mask%'
+           and error_message not like '%exposed%'
+    ),
+    'the prefix-only row records the mask repair, not an exposure'
+);
+
+select is(
+    (select count(*)
+       from public.plugin_api_key_logs l
+       join public.plugin_api_keys k on k.id = l.api_key_id
+      where l.action = 'storage_form_repair'
+        and k.user_id = 'd0000000-0000-4000-8000-000000000002'),
+    4::bigint,
+    'every repair row lands in the legacy owner''s key history, through the join the logs view policy uses'
+);
+
 -- Re-run: everything is already in form, so nothing may change.
 create temporary table t_repair2 as
     select * from public.repair_plugin_api_key_material();
@@ -271,6 +333,17 @@ create temporary table t_repair2 as
 select ok(
     (select revoked = 0 and scrubbed = 0 from t_repair2),
     'the repair is idempotent: a second run repairs nothing'
+);
+
+select is(
+    (select count(*) from public.plugin_api_key_logs
+     where action = 'storage_form_repair'
+       and api_key_id in ('d0000000-0000-4000-8000-00000000000b',
+                          'd0000000-0000-4000-8000-00000000000c',
+                          'd0000000-0000-4000-8000-00000000000d',
+                          'd0000000-0000-4000-8000-00000000000e')),
+    4::bigint,
+    'the idempotent re-run writes no further audit rows'
 );
 
 -- Restore the constraints exactly the way the migration does, which also

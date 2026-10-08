@@ -40,7 +40,13 @@
 --   2. Adds CHECK constraints that hold the form from here on, so raw key
 --      material can never rest in either column again.
 --   3. Corrects the column comments: the shipped display mask is 16 chars
---      (boss_pk_ + 8 random), not the 12 the original comments claimed.
+--     (boss_pk_ + 8 random), not the 12 the original comments claimed.
+--   4. Leaves one plugin_api_key_logs row per repaired key (action
+--      'storage_form_repair'), so the owner can see in their key history
+--      that the key was repaired - and, for rows whose plaintext rested
+--      readable in key_hash, that the material was exposed at rest and the
+--      key revoked. Until now a repaired key just vanished from its owner's
+--      list and the only record was a count-only RAISE NOTICE.
 -- ============================================================================
 
 -- ============================================================================
@@ -57,6 +63,14 @@ AS $$
 DECLARE
     v_revoked  bigint := 0;
     v_scrubbed bigint := 0;
+    v_id       uuid;
+    -- The keys each repair arm actually repaired in THIS invocation, taken
+    -- from the UPDATE ... RETURNING loops below - not pre-selected, and not
+    -- re-scanned afterwards: a row a concurrent run already brought back into
+    -- form is skipped by the WHERE re-check, so it is neither re-repaired
+    -- nor logged twice. A key repaired by both arms is audited exactly once.
+    v_exposed  uuid[] := '{}';
+    v_unmasked uuid[] := '{}';
 BEGIN
     -- 1. Whatever is not a 64-char lowercase hex digest can never be matched
     -- by a presented key: hashApiKey always emits 64 lowercase hex chars, so
@@ -70,19 +84,49 @@ BEGIN
     -- uuid-string digest. The twin case (the same key also stored properly
     -- elsewhere) needs no special handling: the unique index on key_hash
     -- cannot trip, and one credential stays live exactly once.
-    UPDATE public.plugin_api_keys k
-       SET key_hash = pg_catalog.encode(extensions.digest(k.id::text, 'sha256'), 'hex'),
-           revoked_at = COALESCE(k.revoked_at, now())
-     WHERE k.key_hash !~ '^[0-9a-f]{64}$';
-    GET DIAGNOSTICS v_revoked = ROW_COUNT;
+    FOR v_id IN
+        UPDATE public.plugin_api_keys k
+           SET key_hash = pg_catalog.encode(extensions.digest(k.id::text, 'sha256'), 'hex'),
+               revoked_at = COALESCE(k.revoked_at, now())
+         WHERE k.key_hash !~ '^[0-9a-f]{64}$'
+        RETURNING k.id
+    LOOP
+        v_exposed := array_append(v_exposed, v_id);
+    END LOOP;
+    v_revoked := COALESCE(array_length(v_exposed, 1), 0);
 
     -- 2. A prefix that is not exactly the 16-char mask may be holding material
     -- beyond the 8 display chars. Replace it with a fixed placeholder that
     -- keeps the mask's shape; the key itself keeps validating.
-    UPDATE public.plugin_api_keys
-       SET key_prefix = 'boss_pk_scrubbed'
-     WHERE key_prefix !~ '^boss_pk_[A-Za-z0-9]{8}$';
-    GET DIAGNOSTICS v_scrubbed = ROW_COUNT;
+    FOR v_id IN
+        UPDATE public.plugin_api_keys
+           SET key_prefix = 'boss_pk_scrubbed'
+         WHERE key_prefix !~ '^boss_pk_[A-Za-z0-9]{8}$'
+        RETURNING id
+    LOOP
+        v_unmasked := array_append(v_unmasked, v_id);
+    END LOOP;
+    v_scrubbed := COALESCE(array_length(v_unmasked, 1), 0);
+
+    -- 3. One audit row per repaired key, so a repair no longer leaves the
+    -- owner with a silently vanished key and this function with a count-only
+    -- RAISE NOTICE: the row lands in the owner's key history through the
+    -- "Users can view own API key logs" policy, and for arm-1 keys it states
+    -- that the material was exposed at rest. Only the migration and the
+    -- service role can execute this function; both write plugin_api_key_logs
+    -- legitimately, with the client INSERT grants revoked in 20260911010000.
+    INSERT INTO public.plugin_api_key_logs (api_key_id, action, success, error_message)
+    SELECT DISTINCT k.id,
+           'storage_form_repair',
+           TRUE,
+           CASE
+               WHEN k.id = ANY (v_exposed) AND k.id = ANY (v_unmasked)
+                   THEN 'key_hash held non-digest material (exposed at rest; key revoked and scrubbed) and key_prefix held material beyond the display mask'
+               WHEN k.id = ANY (v_exposed)
+                   THEN 'key_hash held non-digest material: the key was exposed at rest, revoked, and its material scrubbed'
+               ELSE 'key_prefix held material beyond the 16-char display mask; replaced by the masked placeholder; the key keeps validating'
+           END
+      FROM unnest(v_exposed || v_unmasked) AS k(id);
 
     RAISE NOTICE 'plugin_api_keys storage-form repair: revoked and scrubbed % non-digest key_hash row(s) (raw key material and dead hashes alike), scrubbed % unmasked prefix(es)',
         v_revoked, v_scrubbed;
@@ -94,7 +138,7 @@ $$;
 REVOKE EXECUTE ON FUNCTION public.repair_plugin_api_key_material() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.repair_plugin_api_key_material() TO service_role;
 
-COMMENT ON FUNCTION public.repair_plugin_api_key_material() IS 'Brings plugin_api_keys rows back into the enforced storage form: revokes and scrubs rows whose key_hash can never match a presented key (raw key material included - validation matches digests only, so it was inert, and its plaintext rested exposed at rest), and replaces unmasked key_prefix values with a fixed conforming placeholder. Idempotent: a second run repairs nothing.';
+COMMENT ON FUNCTION public.repair_plugin_api_key_material() IS 'Brings plugin_api_keys rows back into the enforced storage form: revokes and scrubs rows whose key_hash can never match a presented key (raw key material included - validation matches digests only, so it was inert, and its plaintext rested exposed at rest), and replaces unmasked key_prefix values with a fixed conforming placeholder. Idempotent: a second run repairs nothing. Writes one plugin_api_key_logs row per repaired key (action ''storage_form_repair'') so its owner can see the repair - and the exposure, for arm-1 rows - in their key history.';
 
 -- Run it once here; re-running the migration re-runs it harmlessly.
 SELECT * FROM public.repair_plugin_api_key_material();
