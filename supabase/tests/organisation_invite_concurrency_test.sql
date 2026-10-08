@@ -1,5 +1,5 @@
 -- pgTAP test: two real PostgreSQL sessions racing to redeem ONE single-use
--- organisation invite (migration 20260801040000 + 20260923173000).
+-- organisation invite (migration 20260801040000 + 20260924150000).
 -- Run with: supabase test db
 --
 -- The redeem path's race safety rests on the SELECT ... FOR UPDATE on the

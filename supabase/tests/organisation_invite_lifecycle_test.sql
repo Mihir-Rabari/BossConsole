@@ -1,5 +1,5 @@
 -- pgTAP tests for the organisation invite CONSUME-TIME lifecycle
--- (migration 20260923173000_organisation_invite_lifecycle.sql).
+-- (migration 20260924150000_organisation_invite_lifecycle.sql).
 -- Run with: supabase test db
 --
 -- Mint-time checks are a TOCTOU over the whole life of a link: an invite is a

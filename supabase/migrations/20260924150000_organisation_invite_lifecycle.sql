@@ -1,7 +1,7 @@
 -- ============================================================================
 -- BOSS Database Schema: Organisation invite consume-time lifecycle
 -- ============================================================================
--- File: 20260923173000_organisation_invite_lifecycle.sql
+-- File: 20260924150000_organisation_invite_lifecycle.sql
 -- Description:
 --   redeem_organisation_invite re-checks, at CONSUME time, everything that was
 --   true when the link was minted. Mint-time checks alone are a TOCTOU over the
@@ -437,5 +437,5 @@ COMMENT ON FUNCTION "public"."list_organisation_invites"("uuid", "uuid") IS 'Inv
 
 
 -- ============================================================================
--- End of File: 20260923173000_organisation_invite_lifecycle.sql
+-- End of File: 20260924150000_organisation_invite_lifecycle.sql
 -- ============================================================================
